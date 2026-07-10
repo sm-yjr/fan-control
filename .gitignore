@@ -1,0 +1,36 @@
+.DS_Store
+*.log
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+*.keystore
+credentials.*
+secrets.*
+
+# Swift Package Manager
+/.build/
+/.swiftpm/
+
+# Local app bundles and build outputs
+/dist/
+/DerivedData/
+
+# Xcode user state
+*.xcuserstate
+*.xcuserdata/
+xcuserdata/
+
+# Local Codex/Claude machine state. Keep environment.toml trackable.
+/.codex/config.toml
+/.claude/settings.local.json
+
+# Stray local screenshot/artifact currently present in the workspace.
+/-R

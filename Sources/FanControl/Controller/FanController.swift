@@ -1,0 +1,546 @@
+import Foundation
+import Darwin
+
+struct FanState: Codable, Identifiable {
+    var id: Int { fanId }
+    let fanId: Int
+    var mode: FanControlMode = .automatic
+    var curveConfig: FanCurveConfig?
+
+    var lastTemperature: Double = 0
+    var lastSpeedPercent: Double = 0
+    var wasRising: Bool = true
+
+    init(fanId: Int) {
+        self.fanId = fanId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fanId
+        case mode
+        case curveConfig
+        case lastTemperature
+        case lastSpeedPercent
+        case wasRising
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        fanId = try container.decode(Int.self, forKey: .fanId)
+        mode = try container.decodeIfPresent(FanControlMode.self, forKey: .mode) ?? .automatic
+        curveConfig = try container.decodeIfPresent(FanCurveConfig.self, forKey: .curveConfig)
+        lastTemperature = try container.decodeIfPresent(Double.self, forKey: .lastTemperature) ?? 0
+        lastSpeedPercent = try container.decodeIfPresent(Double.self, forKey: .lastSpeedPercent) ?? 0
+        wasRising = try container.decodeIfPresent(Bool.self, forKey: .wasRising) ?? true
+    }
+}
+
+@Observable
+final class FanController {
+    var fanStates: [FanState] = []
+    var isActive: Bool = false
+
+    private var sensorManager: SensorManager
+    private var loadedStates: [FanState] = []
+    private var lastTargetRPM: [Int: Int] = [:]
+    private var lastWriteAt: [Int: Date] = [:]
+    private var fanWriteInFlight: Set<Int> = []
+    private var pendingTargetRPM: [Int: Int] = [:]
+    private var fanOffEnteredAt: [Int: Date] = [:]
+    private var fanStartedAt: [Int: Date] = [:]
+    private var lastModeReconcileAt: [Int: Date] = [:]
+    private var rpmMismatchStartedAt: [Int: Date] = [:]
+    private var lastRPMReconcileAt: [Int: Date] = [:]
+    private let minRPMDelta = 75
+    private let minWriteInterval: TimeInterval = 5
+    private let minModeReconcileInterval: TimeInterval = 30
+    private let minRPMMismatchDuration: TimeInterval = 10
+    private let minRPMReconcileInterval: TimeInterval = 15
+    private let maxRampUpRPMPerSecond: Double = 350
+    private let maxRampDownRPMPerSecond: Double = 250
+    private let emergencyRampBypassTemperature: Double = 85
+    private let minFanOffResidence: TimeInterval = 30
+    private let minFanRunResidenceAfterOff: TimeInterval = 60
+
+    init(sensorManager: SensorManager) {
+        self.sensorManager = sensorManager
+        loadConfig()
+    }
+
+    func start() {
+        isActive = true
+        syncFans(sensorManager.fans)
+        handleSensorUpdate()
+    }
+
+    func stop(completion: (() -> Void)? = nil) {
+        isActive = false
+        let states = fanStates
+        fanWriteInFlight.removeAll()
+        pendingTargetRPM.removeAll()
+        fanOffEnteredAt.removeAll()
+        fanStartedAt.removeAll()
+        lastModeReconcileAt.removeAll()
+        rpmMismatchStartedAt.removeAll()
+        lastRPMReconcileAt.removeAll()
+
+        let group = DispatchGroup()
+        for state in states {
+            group.enter()
+            FanControlWriter.setFanMode(state.fanId, mode: .automatic) {
+                group.leave()
+            }
+        }
+        group.enter()
+        FanControlWriter.resetAll {
+            group.leave()
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            _ = group.wait(timeout: .now() + 3)
+            for state in states {
+                debugLog("[FanControl] stop reset fan=\(state.fanId)")
+            }
+            if let completion {
+                DispatchQueue.main.async { completion() }
+            }
+        }
+    }
+
+    func setMode(_ mode: FanControlMode, forFan fanId: Int) {
+        guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
+        let oldMode = fanStates[idx].mode
+        fanStates[idx].mode = mode
+        debugLog("[FanControl] setMode fan=\(fanId) mode=\(mode)")
+
+        switch mode {
+        case .automatic:
+            setAutomatic(fanId: fanId)
+        case .manual(let rpm):
+            scheduleFanSpeedWrite(fanId: fanId, rpm: rpm, force: true)
+        case .curve:
+            break
+        }
+
+        if case .curve = oldMode {} else if case .curve = mode {} else {}
+        saveConfig()
+    }
+
+    func setCurveConfig(_ config: FanCurveConfig, forFan fanId: Int) {
+        guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
+        fanStates[idx].curveConfig = config
+        fanStates[idx].mode = .curve(configId: config.id)
+        saveConfig()
+    }
+
+    func resetCurve(forFan fanId: Int) {
+        guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
+        let sensorKey = fanStates[idx].curveConfig?.sensorKey ?? defaultSensorKey
+        let config = FanCurveConfig.defaultCurve(sensorKey: sensorKey)
+        fanStates[idx].curveConfig = config
+        fanStates[idx].mode = .curve(configId: config.id)
+        fanStates[idx].lastTemperature = 0
+        fanStates[idx].lastSpeedPercent = 0
+        fanStates[idx].wasRising = true
+        lastTargetRPM[fanId] = nil
+        lastWriteAt[fanId] = nil
+        fanOffEnteredAt[fanId] = nil
+        fanStartedAt[fanId] = nil
+        rpmMismatchStartedAt[fanId] = nil
+        lastRPMReconcileAt[fanId] = nil
+        saveConfig()
+        handleSensorUpdate()
+    }
+
+    func prepareForSleep() {
+        debugLog("[FanControl] prepareForSleep")
+        fanWriteInFlight.removeAll()
+        pendingTargetRPM.removeAll()
+    }
+
+    func reapplyConfiguredModes(reason: String) {
+        guard isActive else { return }
+        debugLog("[FanControl] reapplyConfiguredModes reason=\(reason) fans=\(fanStates.count)")
+        fanWriteInFlight.removeAll()
+        pendingTargetRPM.removeAll()
+        lastTargetRPM.removeAll()
+        lastWriteAt.removeAll()
+        lastModeReconcileAt.removeAll()
+        rpmMismatchStartedAt.removeAll()
+        lastRPMReconcileAt.removeAll()
+
+        syncFans(sensorManager.fans)
+
+        for state in fanStates {
+            switch state.mode {
+            case .automatic:
+                debugLog("[FanControl] reapply fan=\(state.fanId) mode=automatic")
+                FanControlWriter.setFanMode(state.fanId, mode: .automatic)
+            case .manual(let rpm):
+                debugLog("[FanControl] reapply fan=\(state.fanId) mode=manual rpm=\(rpm)")
+                fanOffEnteredAt[state.fanId] = nil
+                fanStartedAt[state.fanId] = nil
+                scheduleFanSpeedWrite(fanId: state.fanId, rpm: rpm, force: true)
+            case .curve:
+                debugLog("[FanControl] reapply fan=\(state.fanId) mode=curve")
+                fanStatesApplyCurveReset(fanId: state.fanId)
+            }
+        }
+
+        handleSensorUpdate()
+    }
+
+    func syncFans(_ fans: [FanInfo]) {
+        let fanIds = Set(fans.map(\.id))
+        fanStates.removeAll { !fanIds.contains($0.fanId) }
+
+        for fan in fans where !fanStates.contains(where: { $0.fanId == fan.id }) {
+            let saved = loadedStates.first { $0.fanId == fan.id }
+            fanStates.append(saved ?? FanState(fanId: fan.id))
+        }
+    }
+
+    func handleSensorUpdate() {
+        guard isActive else { return }
+        syncFans(sensorManager.fans)
+
+        for i in fanStates.indices {
+            let fanId = fanStates[i].fanId
+            guard fanId < sensorManager.fans.count else { continue }
+            let fan = sensorManager.fans[fanId]
+            let shouldForceReconcile = shouldForceModeReconcile(fanId: fanId, observedMode: fan.mode)
+
+            switch fanStates[i].mode {
+            case .automatic:
+                continue
+            case .manual(let rpm):
+                let shouldForceRPM = shouldForceRPMReconcile(fanId: fanId, fan: fan, desiredRPM: rpm)
+                if shouldForceReconcile || shouldForceRPM {
+                    debugLog("[FanControl] reconcileFanMode fan=\(fanId) desired=manual observed=automatic rpm=\(rpm)")
+                    scheduleFanSpeedWrite(fanId: fanId, rpm: rpm, force: true)
+                }
+                continue
+            case .curve(let configId):
+                guard let config = fanStates[i].curveConfig, config.id == configId else { continue }
+
+                let temperature: Double
+                if config.sensorKey == "Average CPU" {
+                    temperature = sensorManager.averageCPU
+                } else if config.sensorKey == "Average GPU" {
+                    temperature = sensorManager.averageGPU
+                } else if config.sensorKey == "Hottest CPU" {
+                    temperature = sensorManager.hottestCPU
+                } else if config.sensorKey == "Hottest GPU" {
+                    temperature = sensorManager.hottestGPU
+                } else if let sensor = sensorManager.temperatures.first(where: { $0.key == config.sensorKey }) {
+                    temperature = sensor.value
+                } else {
+                    continue
+                }
+
+                let isRising = temperature > fanStates[i].lastTemperature
+
+                let speedPercent = config.interpolateWithHysteresis(
+                    temperature: temperature,
+                    lastSpeed: fanStates[i].lastSpeedPercent,
+                    isRising: isRising
+                )
+
+                let desiredRPM = curveTargetRPM(fan: fan, speedPercent: speedPercent)
+                let shouldForceRPM = shouldForceRPMReconcile(fanId: fanId, fan: fan, desiredRPM: desiredRPM)
+
+                if shouldForceReconcile {
+                    debugLog("[FanControl] reconcileFanMode fan=\(fanId) desired=curve observed=automatic")
+                }
+                applyCurveTarget(
+                    fanId: fanId,
+                    fan: fan,
+                    speedPercent: speedPercent,
+                    temperature: temperature,
+                    force: shouldForceReconcile || shouldForceRPM
+                )
+
+                fanStates[i].lastTemperature = temperature
+                fanStates[i].lastSpeedPercent = speedPercent
+                fanStates[i].wasRising = isRising
+            }
+        }
+    }
+
+    private func setAutomatic(fanId: Int) {
+        lastTargetRPM[fanId] = nil
+        lastWriteAt[fanId] = nil
+        fanOffEnteredAt[fanId] = nil
+        fanStartedAt[fanId] = nil
+        lastModeReconcileAt[fanId] = nil
+        rpmMismatchStartedAt[fanId] = nil
+        lastRPMReconcileAt[fanId] = nil
+        FanControlWriter.setFanMode(fanId, mode: .automatic)
+    }
+
+    private func fanStatesApplyCurveReset(fanId: Int) {
+        guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
+        fanStates[idx].lastTemperature = 0
+        fanStates[idx].wasRising = true
+        lastTargetRPM[fanId] = nil
+        lastWriteAt[fanId] = nil
+        lastModeReconcileAt[fanId] = nil
+        rpmMismatchStartedAt[fanId] = nil
+        lastRPMReconcileAt[fanId] = nil
+    }
+
+    private func applyCurveTarget(
+        fanId: Int,
+        fan: FanInfo,
+        speedPercent: Double,
+        temperature: Double,
+        force: Bool = false
+    ) {
+        let now = Date()
+        let wantsFanOff = FanCurveConfig.isFanOffSpeed(speedPercent)
+        let isCurrentlyOff = isFanOff(fanId: fanId, fan: fan)
+        let bypassRamp = shouldBypassRampLimit(fan: fan, speedPercent: speedPercent, temperature: temperature)
+
+        if wantsFanOff {
+            if let startedAt = fanStartedAt[fanId],
+               now.timeIntervalSince(startedAt) < minFanRunResidenceAfterOff {
+                let remaining = minFanRunResidenceAfterOff - now.timeIntervalSince(startedAt)
+                let holdRPM = minimumRunningRPM(for: fan)
+                debugLog("[FanControl] holdFanRunning fan=\(fanId) rpm=\(holdRPM) remaining=\(String(format: "%.1f", remaining))s")
+                scheduleFanSpeedWrite(fanId: fanId, rpm: holdRPM, force: force, bypassRampLimit: bypassRamp)
+                return
+            }
+
+            if !isCurrentlyOff {
+                debugLog("[FanControl] enterFanOff fan=\(fanId) minResidence=\(Int(minFanOffResidence))s")
+                fanOffEnteredAt[fanId] = now
+            } else if fanOffEnteredAt[fanId] == nil {
+                fanOffEnteredAt[fanId] = now
+            }
+            fanStartedAt[fanId] = nil
+            scheduleFanSpeedWrite(fanId: fanId, rpm: 0, force: force, allowBelowMin: true, bypassRampLimit: bypassRamp)
+            return
+        }
+
+        let targetRPM = curveTargetRPM(fan: fan, speedPercent: speedPercent)
+
+        if isCurrentlyOff,
+           let offEnteredAt = fanOffEnteredAt[fanId],
+           now.timeIntervalSince(offEnteredAt) < minFanOffResidence {
+            let remaining = minFanOffResidence - now.timeIntervalSince(offEnteredAt)
+            debugLog("[FanControl] holdFanOff fan=\(fanId) requestedRPM=\(targetRPM) remaining=\(String(format: "%.1f", remaining))s")
+            scheduleFanSpeedWrite(fanId: fanId, rpm: 0, force: force, allowBelowMin: true, bypassRampLimit: bypassRamp)
+            return
+        }
+
+        if isCurrentlyOff {
+            debugLog("[FanControl] leaveFanOff fan=\(fanId) targetRPM=\(targetRPM) minRun=\(Int(minFanRunResidenceAfterOff))s")
+            fanStartedAt[fanId] = now
+            fanOffEnteredAt[fanId] = nil
+        }
+        scheduleFanSpeedWrite(fanId: fanId, rpm: targetRPM, force: force, bypassRampLimit: bypassRamp)
+    }
+
+    private func scheduleFanSpeedWrite(
+        fanId: Int,
+        rpm: Int,
+        force: Bool = false,
+        allowBelowMin: Bool = false,
+        bypassRampLimit: Bool = false
+    ) {
+        let targetRPM = clampRPM(rpm, forFan: fanId, allowBelowMin: allowBelowMin)
+        let clampedRPM = applyRampLimit(
+            fanId: fanId,
+            targetRPM: targetRPM,
+            allowBelowMin: allowBelowMin,
+            bypass: bypassRampLimit
+        )
+        guard force || shouldWrite(fanId: fanId, rpm: clampedRPM) else {
+            debugLog("[FanControl] skipWrite fan=\(fanId) rpm=\(clampedRPM) reason=throttled")
+            return
+        }
+
+        if fanWriteInFlight.contains(fanId) {
+            pendingTargetRPM[fanId] = clampedRPM
+            debugLog("[FanControl] queuePending fan=\(fanId) rpm=\(clampedRPM)")
+            return
+        }
+
+        let previousTargetRPM = lastTargetRPM[fanId]
+        fanWriteInFlight.insert(fanId)
+        lastTargetRPM[fanId] = clampedRPM
+        lastWriteAt[fanId] = Date()
+        recordFanTransition(fanId: fanId, previousRPM: previousTargetRPM, rpm: clampedRPM)
+        debugLog("[FanControl] scheduleWrite fan=\(fanId) rpm=\(clampedRPM) force=\(force)")
+
+        FanControlWriter.setFanRPM(fanId, rpm: clampedRPM) { [weak self] in
+            guard let self else { return }
+            self.fanWriteInFlight.remove(fanId)
+            if let pending = self.pendingTargetRPM.removeValue(forKey: fanId) {
+                self.scheduleFanSpeedWrite(fanId: fanId, rpm: pending, allowBelowMin: pending == 0)
+            }
+        }
+    }
+
+    private func shouldWrite(fanId: Int, rpm: Int) -> Bool {
+        guard let previous = lastTargetRPM[fanId] else { return true }
+        if previous == rpm { return false }
+
+        let delta = abs(previous - rpm)
+        let elapsed = Date().timeIntervalSince(lastWriteAt[fanId] ?? .distantPast)
+        return delta >= minRPMDelta || elapsed >= minWriteInterval
+    }
+
+    private func shouldForceModeReconcile(fanId: Int, observedMode: FanMode) -> Bool {
+        guard observedMode == .automatic else { return false }
+        let now = Date()
+        if let last = lastModeReconcileAt[fanId],
+           now.timeIntervalSince(last) < minModeReconcileInterval {
+            return false
+        }
+        lastModeReconcileAt[fanId] = now
+        return true
+    }
+
+    private func shouldForceRPMReconcile(fanId: Int, fan: FanInfo, desiredRPM: Int) -> Bool {
+        let effectiveDesiredRPM = lastTargetRPM[fanId] ?? desiredRPM
+        let tolerance = rpmTolerance(for: effectiveDesiredRPM)
+        let delta = abs(Int(fan.currentSpeed) - effectiveDesiredRPM)
+        let now = Date()
+
+        guard delta > tolerance else {
+            rpmMismatchStartedAt[fanId] = nil
+            return false
+        }
+
+        if rpmMismatchStartedAt[fanId] == nil {
+            rpmMismatchStartedAt[fanId] = now
+            debugLog("[FanControl] rpmMismatchStart fan=\(fanId) desired=\(effectiveDesiredRPM) rawDesired=\(desiredRPM) actual=\(Int(fan.currentSpeed)) delta=\(delta)")
+            return false
+        }
+
+        guard now.timeIntervalSince(rpmMismatchStartedAt[fanId] ?? now) >= minRPMMismatchDuration else {
+            return false
+        }
+
+        if let last = lastRPMReconcileAt[fanId],
+           now.timeIntervalSince(last) < minRPMReconcileInterval {
+            return false
+        }
+
+        lastRPMReconcileAt[fanId] = now
+        debugLog("[FanControl] reconcileRPM fan=\(fanId) desired=\(effectiveDesiredRPM) rawDesired=\(desiredRPM) actual=\(Int(fan.currentSpeed)) delta=\(delta)")
+        return true
+    }
+
+    private func curveTargetRPM(fan: FanInfo, speedPercent: Double) -> Int {
+        if FanCurveConfig.isFanOffSpeed(speedPercent) { return 0 }
+        return Int(fan.minSpeed + (speedPercent / 100.0) * (fan.maxSpeed - fan.minSpeed))
+    }
+
+    private func rpmTolerance(for desiredRPM: Int) -> Int {
+        if desiredRPM == 0 { return 100 }
+        return max(250, Int(Double(desiredRPM) * 0.12))
+    }
+
+    private func applyRampLimit(fanId: Int, targetRPM: Int, allowBelowMin: Bool, bypass: Bool) -> Int {
+        guard !bypass else { return targetRPM }
+        guard let fan = sensorManager.fans.first(where: { $0.id == fanId }) else { return targetRPM }
+
+        let now = Date()
+        let previousRPM = lastTargetRPM[fanId] ?? Int(fan.currentSpeed)
+        guard previousRPM != targetRPM else { return targetRPM }
+
+        if previousRPM == 0 && targetRPM > 0 && !allowBelowMin {
+            return targetRPM
+        }
+
+        let elapsed = max(now.timeIntervalSince(lastWriteAt[fanId] ?? now), 1.0)
+        let isRampUp = targetRPM > previousRPM
+        let maxDelta = Int((isRampUp ? maxRampUpRPMPerSecond : maxRampDownRPMPerSecond) * elapsed)
+        guard abs(targetRPM - previousRPM) > maxDelta else { return targetRPM }
+
+        let limitedRPM = previousRPM + (isRampUp ? maxDelta : -maxDelta)
+        let clamped = clampRPM(limitedRPM, forFan: fanId, allowBelowMin: allowBelowMin)
+        debugLog("[FanControl] timeHysteresis fan=\(fanId) desired=\(targetRPM) limited=\(clamped) previous=\(previousRPM) elapsed=\(String(format: "%.1f", elapsed))s")
+        return clamped
+    }
+
+    private func shouldBypassRampLimit(fan: FanInfo, speedPercent: Double, temperature: Double) -> Bool {
+        temperature >= emergencyRampBypassTemperature || speedPercent >= 90 || fan.currentSpeed >= fan.maxSpeed * 0.95
+    }
+
+    private func clampRPM(_ rpm: Int, forFan fanId: Int, allowBelowMin: Bool = false) -> Int {
+        guard let fan = sensorManager.fans.first(where: { $0.id == fanId }) else { return rpm }
+        let minRPM = allowBelowMin ? 0 : Int(fan.minSpeed)
+        let maxRPM = Int(fan.maxSpeed)
+        return min(max(rpm, minRPM), maxRPM)
+    }
+
+    private func isFanOff(fanId: Int, fan: FanInfo) -> Bool {
+        if lastTargetRPM[fanId] == 0 { return true }
+        if fanOffEnteredAt[fanId] != nil { return true }
+        return fan.currentSpeed <= 50
+    }
+
+    private func minimumRunningRPM(for fan: FanInfo) -> Int {
+        max(1, Int(fan.minSpeed))
+    }
+
+    private func recordFanTransition(fanId: Int, previousRPM: Int?, rpm: Int) {
+        let now = Date()
+        if rpm == 0 {
+            if fanOffEnteredAt[fanId] == nil {
+                fanOffEnteredAt[fanId] = now
+            }
+            fanStartedAt[fanId] = nil
+        } else if previousRPM == 0 || fanOffEnteredAt[fanId] != nil {
+            fanStartedAt[fanId] = now
+            fanOffEnteredAt[fanId] = nil
+        }
+    }
+
+    private var defaultSensorKey: String {
+        sensorManager.averageCPU > 0 ? "Average CPU" : (sensorManager.temperatures.first?.key ?? "")
+    }
+
+    // MARK: - Persistence
+
+    private var configURL: URL {
+        let dir = Self.configHomeDirectory
+            .appendingPathComponent(".config/fan-control", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("config.json")
+    }
+
+    private static var configHomeDirectory: URL {
+        if geteuid() == 0,
+           let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"],
+           sudoUser != "root",
+           let passwd = getpwnam(sudoUser) {
+            return URL(fileURLWithPath: String(cString: passwd.pointee.pw_dir), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    func saveConfig() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(fanStates) {
+            try? data.write(to: configURL)
+        }
+    }
+
+    func loadConfig() {
+        guard let data = try? Data(contentsOf: configURL),
+              let loaded = try? JSONDecoder().decode([FanState].self, from: data) else { return }
+
+        loadedStates = loaded
+        for saved in loaded {
+            if let idx = fanStates.firstIndex(where: { $0.fanId == saved.fanId }) {
+                fanStates[idx].mode = saved.mode
+                fanStates[idx].curveConfig = saved.curveConfig
+            }
+        }
+    }
+}
