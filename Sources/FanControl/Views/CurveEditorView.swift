@@ -15,7 +15,7 @@ struct CurveEditorSheet: View {
         self.fanId = fanId
 
         let existing = fanController.fanStates.first(where: { $0.fanId == fanId })?.curveConfig
-        let defaultSensor = sensorManager.averageCPU > 0 ? "Average CPU" : (sensorManager.temperatures.first?.key ?? "")
+        let defaultSensor = sensorManager.preferredCurveSensorKey
         let cfg = existing ?? FanCurveConfig.defaultCurve(sensorKey: defaultSensor)
         self._config = CLTState(initialValue: cfg)
         self._selectedSensorKey = CLTState(initialValue: cfg.sensorKey)
@@ -30,8 +30,9 @@ struct CurveEditorSheet: View {
 
             CurveEditorView(
                 points: $config.points,
-                currentTemperature: currentTemp,
-                currentSpeed: currentSpeedPercent
+                currentInput: currentInput,
+                currentSpeed: currentSpeedPercent,
+                isThermalDemand: CurveInput.isThermalDemand(selectedSensorKey)
             )
             .frame(height: 250)
 
@@ -44,7 +45,7 @@ struct CurveEditorSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Apply") {
-                    config.sensorKey = selectedSensorKey
+                    config.setSensorKey(selectedSensorKey)
                     fanController.setCurveConfig(config, forFan: fanId)
                     dismiss()
                 }
@@ -54,15 +55,20 @@ struct CurveEditorSheet: View {
         .padding(20)
         .frame(width: 480)
         .onChange(of: selectedSensorKey) { _, newValue in
-            config.sensorKey = newValue
+            config.setSensorKey(newValue)
         }
     }
 
     private var sensorPicker: some View {
         HStack {
-            Text("Temperature Source:")
+            Text("Control Source:")
                 .font(.subheadline)
             Picker("", selection: $selectedSensorKey) {
+                if sensorManager.thermalDemandAvailable {
+                    Text("Thermal Load (\(String(format: "%.0f%%", sensorManager.thermalDemand)))")
+                        .tag(CurveInput.thermalDemandKey)
+                    Divider()
+                }
                 if sensorManager.averageCPU > 0 {
                     Text("Average CPU").tag("Average CPU")
                     Text("Hottest CPU").tag("Hottest CPU")
@@ -85,34 +91,39 @@ struct CurveEditorSheet: View {
         HStack {
             Text("Hysteresis:")
                 .font(.subheadline)
-            Slider(value: $config.hysteresis, in: 0...10, step: 0.5)
-            Text(String(format: "%.1f°C", config.hysteresis))
+            Slider(
+                value: $config.hysteresis,
+                in: CurveInput.isThermalDemand(selectedSensorKey) ? 0...20 : 0...10,
+                step: 0.5
+            )
+            Text(hysteresisText)
                 .font(.system(.subheadline, design: .monospaced))
-            .frame(width: 50)
+                .frame(width: 62)
         }
     }
 
-    private var currentTemp: Double {
-        switch selectedSensorKey {
-        case "Average CPU": sensorManager.averageCPU
-        case "Average GPU": sensorManager.averageGPU
-        case "Hottest CPU": sensorManager.hottestCPU
-        case "Hottest GPU": sensorManager.hottestGPU
-        default: sensorManager.temperatures.first(where: { $0.key == selectedSensorKey })?.value ?? 0
-        }
+    private var currentInput: Double {
+        sensorManager.curveInputValue(for: selectedSensorKey) ?? 0
     }
 
     private var currentSpeedPercent: Double {
-        return config.interpolate(temperature: currentTemp)
+        config.interpolate(temperature: currentInput)
+    }
+
+    private var hysteresisText: String {
+        if CurveInput.isThermalDemand(selectedSensorKey) {
+            return String(format: "%.1f%%", config.hysteresis)
+        }
+        return String(format: "%.1f°C", config.hysteresis)
     }
 }
 
 struct CurveEditorView: View {
     @Binding var points: [CurvePoint]
-    var currentTemperature: Double
+    var currentInput: Double
     var currentSpeed: Double
+    var isThermalDemand: Bool
 
-    private let tempRange: ClosedRange<Double> = 20...100
     private let speedRange: ClosedRange<Double> = FanCurveConfig.fanOffSpeed...100
     private let padding: CGFloat = 40
 
@@ -137,9 +148,13 @@ struct CurveEditorView: View {
             .onTapGesture(count: 2) { location in
                 addPoint(at: location, in: plotArea)
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Fan curve editor")
+            .accessibilityHint("Curve points provide actions for adjusting input and fan speed")
         }
         .background(Color.primary.opacity(0.03))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .help("Double-click to add a curve point; drag a point to adjust it")
     }
 
     // MARK: - Grid
@@ -164,14 +179,15 @@ struct CurveEditorView: View {
                 at: CGPoint(x: rect.minX - 22, y: rect.maxY - 6)
             )
 
-            for temp in stride(from: 20.0, through: 100.0, by: 10.0) {
-                let x = tempToX(temp, in: rect)
+            let step = isThermalDemand ? 20.0 : 10.0
+            for input in stride(from: inputRange.lowerBound, through: inputRange.upperBound, by: step) {
+                let x = inputToX(input, in: rect)
                 context.stroke(
                     Path { p in p.move(to: CGPoint(x: x, y: rect.minY)); p.addLine(to: CGPoint(x: x, y: rect.maxY)) },
                     with: .color(gridColor), lineWidth: 0.5
                 )
                 context.draw(
-                    Text("\(Int(temp))°").font(.system(size: 9)).foregroundStyle(.secondary),
+                    Text(inputLabel(input)).font(.system(size: 9)).foregroundStyle(.secondary),
                     at: CGPoint(x: x, y: rect.maxY + 12)
                 )
             }
@@ -197,10 +213,10 @@ struct CurveEditorView: View {
         return Path { path in
             guard let first = sorted.first else { return }
             path.move(to: CGPoint(x: rect.minX, y: speedToY(first.fanSpeed, in: rect)))
-            path.addLine(to: CGPoint(x: tempToX(first.temperature, in: rect), y: speedToY(first.fanSpeed, in: rect)))
+            path.addLine(to: CGPoint(x: inputToX(first.temperature, in: rect), y: speedToY(first.fanSpeed, in: rect)))
 
             for point in sorted {
-                path.addLine(to: CGPoint(x: tempToX(point.temperature, in: rect), y: speedToY(point.fanSpeed, in: rect)))
+                path.addLine(to: CGPoint(x: inputToX(point.temperature, in: rect), y: speedToY(point.fanSpeed, in: rect)))
             }
 
             if let last = sorted.last {
@@ -213,7 +229,7 @@ struct CurveEditorView: View {
     // MARK: - Current indicator
 
     private func currentIndicator(_ rect: CGRect) -> some View {
-        let x = tempToX(currentTemperature, in: rect)
+        let x = inputToX(currentInput, in: rect)
         let y = speedToY(currentSpeed, in: rect)
 
         return ZStack {
@@ -234,26 +250,46 @@ struct CurveEditorView: View {
 
     private func controlPoints(_ rect: CGRect) -> some View {
         ForEach(points) { point in
-            let x = tempToX(point.temperature, in: rect)
+            let x = inputToX(point.temperature, in: rect)
             let y = speedToY(point.fanSpeed, in: rect)
 
-            Circle()
-                .fill(draggingPointId == point.id ? Color.white : Color.accentColor)
-                .stroke(Color.accentColor, lineWidth: 2)
-                .frame(width: 14, height: 14)
+            ZStack {
+                Circle()
+                    .fill(draggingPointId == point.id ? Color.white : Color.accentColor)
+                    .stroke(Color.accentColor, lineWidth: 2)
+                    .frame(width: 14, height: 14)
+            }
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
                 .position(x: x, y: y)
                 .gesture(
                     DragGesture(minimumDistance: 1)
                         .onChanged { value in
                             draggingPointId = point.id
                             guard let idx = points.firstIndex(where: { $0.id == point.id }) else { return }
-                            let temp = xToTemp(value.location.x, in: rect)
+                            let input = xToInput(value.location.x, in: rect)
                             let speed = yToSpeed(value.location.y, in: rect)
-                            points[idx].temperature = min(max(temp, tempRange.lowerBound), tempRange.upperBound)
+                            points[idx].temperature = min(max(input, inputRange.lowerBound), inputRange.upperBound)
                             points[idx].fanSpeed = min(max(speed, speedRange.lowerBound), speedRange.upperBound)
                         }
                         .onEnded { _ in draggingPointId = nil }
                 )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Curve point")
+                .accessibilityValue(accessibilityValue(for: point))
+                .accessibilityHint("Use actions to adjust this point")
+                .accessibilityAction(named: Text("Increase \(inputAccessibilityName)")) {
+                    adjustPoint(point.id, inputDelta: inputAdjustmentStep)
+                }
+                .accessibilityAction(named: Text("Decrease \(inputAccessibilityName)")) {
+                    adjustPoint(point.id, inputDelta: -inputAdjustmentStep)
+                }
+                .accessibilityAction(named: Text("Increase fan speed")) {
+                    adjustPoint(point.id, speedDelta: 5)
+                }
+                .accessibilityAction(named: Text("Decrease fan speed")) {
+                    adjustPoint(point.id, speedDelta: -5)
+                }
                 .contextMenu {
                     if points.count > 2 {
                         Button("Delete Point") {
@@ -266,8 +302,13 @@ struct CurveEditorView: View {
 
     // MARK: - Coordinate conversion
 
-    private func tempToX(_ temp: Double, in rect: CGRect) -> CGFloat {
-        let ratio = (temp - tempRange.lowerBound) / (tempRange.upperBound - tempRange.lowerBound)
+    private var inputRange: ClosedRange<Double> {
+        isThermalDemand ? 0...100 : 20...100
+    }
+
+    private func inputToX(_ input: Double, in rect: CGRect) -> CGFloat {
+        let rawRatio = (input - inputRange.lowerBound) / (inputRange.upperBound - inputRange.lowerBound)
+        let ratio = min(max(rawRatio, 0), 1)
         return rect.minX + CGFloat(ratio) * rect.width
     }
 
@@ -276,9 +317,9 @@ struct CurveEditorView: View {
         return rect.maxY - CGFloat(ratio) * rect.height
     }
 
-    private func xToTemp(_ x: CGFloat, in rect: CGRect) -> Double {
+    private func xToInput(_ x: CGFloat, in rect: CGRect) -> Double {
         let ratio = Double((x - rect.minX) / rect.width)
-        return tempRange.lowerBound + ratio * (tempRange.upperBound - tempRange.lowerBound)
+        return inputRange.lowerBound + ratio * (inputRange.upperBound - inputRange.lowerBound)
     }
 
     private func yToSpeed(_ y: CGFloat, in rect: CGRect) -> Double {
@@ -288,11 +329,49 @@ struct CurveEditorView: View {
 
     private func addPoint(at location: CGPoint, in rect: CGRect) {
         guard rect.contains(location) else { return }
-        let temp = xToTemp(location.x, in: rect)
+        let input = xToInput(location.x, in: rect)
         let speed = yToSpeed(location.y, in: rect)
         points.append(CurvePoint(
-            temperature: min(max(temp, tempRange.lowerBound), tempRange.upperBound),
+            temperature: min(max(input, inputRange.lowerBound), inputRange.upperBound),
             fanSpeed: min(max(speed, speedRange.lowerBound), speedRange.upperBound)
         ))
+    }
+
+    private var inputAccessibilityName: String {
+        isThermalDemand ? "thermal load" : "temperature"
+    }
+
+    private var inputAdjustmentStep: Double {
+        isThermalDemand ? 2 : 1
+    }
+
+    private func accessibilityValue(for point: CurvePoint) -> String {
+        let inputValue = isThermalDemand
+            ? "\(Int(point.temperature.rounded())) percent thermal load"
+            : "\(Int(point.temperature.rounded())) degrees Celsius"
+        let speedValue = FanCurveConfig.isFanOffSpeed(point.fanSpeed)
+            ? "fan stopped"
+            : "\(Int(point.fanSpeed.rounded())) percent fan speed"
+        return "\(inputValue), \(speedValue)"
+    }
+
+    private func adjustPoint(
+        _ pointId: UUID,
+        inputDelta: Double = 0,
+        speedDelta: Double = 0
+    ) {
+        guard let index = points.firstIndex(where: { $0.id == pointId }) else { return }
+        points[index].temperature = min(
+            max(points[index].temperature + inputDelta, inputRange.lowerBound),
+            inputRange.upperBound
+        )
+        points[index].fanSpeed = min(
+            max(points[index].fanSpeed + speedDelta, speedRange.lowerBound),
+            speedRange.upperBound
+        )
+    }
+
+    private func inputLabel(_ input: Double) -> String {
+        isThermalDemand ? "\(Int(input))%" : "\(Int(input))°"
     }
 }

@@ -51,6 +51,7 @@ final class FanController {
     private var lastModeReconcileAt: [Int: Date] = [:]
     private var rpmMismatchStartedAt: [Int: Date] = [:]
     private var lastRPMReconcileAt: [Int: Date] = [:]
+    private var needsConfigMigrationWrite = false
     private let minRPMDelta = 75
     private let minWriteInterval: TimeInterval = 5
     private let minModeReconcileInterval: TimeInterval = 30
@@ -58,9 +59,9 @@ final class FanController {
     private let minRPMReconcileInterval: TimeInterval = 15
     private let maxRampUpRPMPerSecond: Double = 350
     private let maxRampDownRPMPerSecond: Double = 250
-    private let emergencyRampBypassTemperature: Double = 85
-    private let minFanOffResidence: TimeInterval = 30
-    private let minFanRunResidenceAfterOff: TimeInterval = 60
+    private let inputDirectionDeadband: Double = 0.5
+    private let minFanOffResidence: TimeInterval = 90
+    private let minFanRunResidenceAfterOff: TimeInterval = 180
 
     init(sensorManager: SensorManager) {
         self.sensorManager = sensorManager
@@ -128,8 +129,14 @@ final class FanController {
 
     func setCurveConfig(_ config: FanCurveConfig, forFan fanId: Int) {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
+        let sourceChanged = fanStates[idx].curveConfig?.sensorKey != config.sensorKey
         fanStates[idx].curveConfig = config
         fanStates[idx].mode = .curve(configId: config.id)
+        if sourceChanged {
+            fanStates[idx].lastTemperature = 0
+            fanStates[idx].lastSpeedPercent = 0
+            fanStates[idx].wasRising = true
+        }
         saveConfig()
     }
 
@@ -198,6 +205,11 @@ final class FanController {
             let saved = loadedStates.first { $0.fanId == fan.id }
             fanStates.append(saved ?? FanState(fanId: fan.id))
         }
+
+        if needsConfigMigrationWrite, !fanStates.isEmpty {
+            saveConfig()
+            needsConfigMigrationWrite = false
+        }
     }
 
     func handleSensorUpdate() {
@@ -223,27 +235,29 @@ final class FanController {
             case .curve(let configId):
                 guard let config = fanStates[i].curveConfig, config.id == configId else { continue }
 
-                let temperature: Double
-                if config.sensorKey == "Average CPU" {
-                    temperature = sensorManager.averageCPU
-                } else if config.sensorKey == "Average GPU" {
-                    temperature = sensorManager.averageGPU
-                } else if config.sensorKey == "Hottest CPU" {
-                    temperature = sensorManager.hottestCPU
-                } else if config.sensorKey == "Hottest GPU" {
-                    temperature = sensorManager.hottestGPU
-                } else if let sensor = sensorManager.temperatures.first(where: { $0.key == config.sensorKey }) {
-                    temperature = sensor.value
-                } else {
+                guard let controlInput = sensorManager.curveInputValue(for: config.sensorKey) else {
                     continue
                 }
 
-                let isRising = temperature > fanStates[i].lastTemperature
+                let inputDelta = controlInput - fanStates[i].lastTemperature
+                let isRising: Bool
+                if inputDelta > inputDirectionDeadband {
+                    isRising = true
+                } else if inputDelta < -inputDirectionDeadband {
+                    isRising = false
+                } else {
+                    isRising = fanStates[i].wasRising
+                }
 
-                let speedPercent = config.interpolateWithHysteresis(
-                    temperature: temperature,
+                let requestedSpeedPercent = config.interpolateWithHysteresis(
+                    temperature: controlInput,
                     lastSpeed: fanStates[i].lastSpeedPercent,
                     isRising: isRising
+                )
+                let speedPercent = safetyAdjustedSpeed(
+                    requestedSpeedPercent,
+                    controlInput: controlInput,
+                    sensorKey: config.sensorKey
                 )
 
                 let desiredRPM = curveTargetRPM(fan: fan, speedPercent: speedPercent)
@@ -256,11 +270,11 @@ final class FanController {
                     fanId: fanId,
                     fan: fan,
                     speedPercent: speedPercent,
-                    temperature: temperature,
+                    controlInput: controlInput,
                     force: shouldForceReconcile || shouldForceRPM
                 )
 
-                fanStates[i].lastTemperature = temperature
+                fanStates[i].lastTemperature = controlInput
                 fanStates[i].lastSpeedPercent = speedPercent
                 fanStates[i].wasRising = isRising
             }
@@ -281,6 +295,7 @@ final class FanController {
     private func fanStatesApplyCurveReset(fanId: Int) {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
         fanStates[idx].lastTemperature = 0
+        fanStates[idx].lastSpeedPercent = 0
         fanStates[idx].wasRising = true
         lastTargetRPM[fanId] = nil
         lastWriteAt[fanId] = nil
@@ -293,17 +308,26 @@ final class FanController {
         fanId: Int,
         fan: FanInfo,
         speedPercent: Double,
-        temperature: Double,
+        controlInput: Double,
         force: Bool = false
     ) {
         let now = Date()
         let wantsFanOff = FanCurveConfig.isFanOffSpeed(speedPercent)
         let isCurrentlyOff = isFanOff(fanId: fanId, fan: fan)
-        let bypassRamp = shouldBypassRampLimit(fan: fan, speedPercent: speedPercent, temperature: temperature)
+        let thermallyUrgent = sensorManager.systemThermalPressure >= .serious
+            || sensorManager.hottestSiliconTemperature >= 96
+            || controlInput >= 90
+            || speedPercent >= 70
+        let bypassRamp = shouldBypassRampLimit(
+            fan: fan,
+            speedPercent: speedPercent,
+            thermallyUrgent: thermallyUrgent
+        )
 
         if wantsFanOff {
             if let startedAt = fanStartedAt[fanId],
-               now.timeIntervalSince(startedAt) < minFanRunResidenceAfterOff {
+               now.timeIntervalSince(startedAt) < minFanRunResidenceAfterOff,
+               !thermallyUrgent {
                 let remaining = minFanRunResidenceAfterOff - now.timeIntervalSince(startedAt)
                 let holdRPM = minimumRunningRPM(for: fan)
                 debugLog("[FanControl] holdFanRunning fan=\(fanId) rpm=\(holdRPM) remaining=\(String(format: "%.1f", remaining))s")
@@ -325,6 +349,7 @@ final class FanController {
         let targetRPM = curveTargetRPM(fan: fan, speedPercent: speedPercent)
 
         if isCurrentlyOff,
+           !thermallyUrgent,
            let offEnteredAt = fanOffEnteredAt[fanId],
            now.timeIntervalSince(offEnteredAt) < minFanOffResidence {
             let remaining = minFanOffResidence - now.timeIntervalSince(offEnteredAt)
@@ -466,8 +491,39 @@ final class FanController {
         return clamped
     }
 
-    private func shouldBypassRampLimit(fan: FanInfo, speedPercent: Double, temperature: Double) -> Bool {
-        temperature >= emergencyRampBypassTemperature || speedPercent >= 90 || fan.currentSpeed >= fan.maxSpeed * 0.95
+    private func shouldBypassRampLimit(
+        fan: FanInfo,
+        speedPercent: Double,
+        thermallyUrgent: Bool
+    ) -> Bool {
+        thermallyUrgent || speedPercent >= 90 || fan.currentSpeed >= fan.maxSpeed * 0.95
+    }
+
+    private func safetyAdjustedSpeed(
+        _ requestedSpeed: Double,
+        controlInput: Double,
+        sensorKey: String
+    ) -> Double {
+        switch sensorManager.systemThermalPressure {
+        case .critical:
+            return 100
+        case .serious:
+            return max(requestedSpeed, 70)
+        case .nominal, .fair:
+            break
+        }
+
+        if sensorManager.hottestSiliconTemperature >= 96 {
+            return max(requestedSpeed, 80)
+        }
+
+        if CurveInput.isThermalDemand(sensorKey) {
+            if controlInput >= 90 { return max(requestedSpeed, 75) }
+            if controlInput >= 75 { return max(requestedSpeed, 45) }
+        } else if controlInput >= 95 {
+            return max(requestedSpeed, 80)
+        }
+        return requestedSpeed
     }
 
     private func clampRPM(_ rpm: Int, forFan fanId: Int, allowBelowMin: Bool = false) -> Int {
@@ -501,7 +557,7 @@ final class FanController {
     }
 
     private var defaultSensorKey: String {
-        sensorManager.averageCPU > 0 ? "Average CPU" : (sensorManager.temperatures.first?.key ?? "")
+        sensorManager.preferredCurveSensorKey
     }
 
     // MARK: - Persistence
@@ -535,8 +591,21 @@ final class FanController {
         guard let data = try? Data(contentsOf: configURL),
               let loaded = try? JSONDecoder().decode([FanState].self, from: data) else { return }
 
-        loadedStates = loaded
-        for saved in loaded {
+        var migratedStates = loaded
+        for index in migratedStates.indices {
+            guard let config = migratedStates[index].curveConfig,
+                  let migrated = config.migratedLegacyDefault() else {
+                continue
+            }
+            migratedStates[index].curveConfig = migrated
+            if case .curve = migratedStates[index].mode {
+                migratedStates[index].mode = .curve(configId: migrated.id)
+            }
+            needsConfigMigrationWrite = true
+        }
+
+        loadedStates = migratedStates
+        for saved in migratedStates {
             if let idx = fanStates.firstIndex(where: { $0.fanId == saved.fanId }) {
                 fanStates[idx].mode = saved.mode
                 fanStates[idx].curveConfig = saved.curveConfig

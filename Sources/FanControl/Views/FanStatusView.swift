@@ -146,7 +146,7 @@ struct FanStatusView: View {
             if let config = state.curveConfig {
                 Image(systemName: "thermometer.medium")
                     .foregroundStyle(.secondary)
-                Text("\(config.sensorKey): \(String(format: "%.1f°C", state.lastTemperature))")
+                Text(curveInputText(config: config, value: state.lastTemperature))
                     .font(.caption)
                 Spacer()
                 Text("→ \(String(format: "%.0f%%", state.lastSpeedPercent))")
@@ -154,5 +154,12 @@ struct FanStatusView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func curveInputText(config: FanCurveConfig, value: Double) -> String {
+        if CurveInput.isThermalDemand(config.sensorKey) {
+            return "\(config.sensorKey): \(String(format: "%.1f%%", value))"
+        }
+        return "\(config.sensorKey): \(String(format: "%.1f°C", value))"
     }
 }

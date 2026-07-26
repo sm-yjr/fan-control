@@ -23,6 +23,15 @@ jobs:
       - name: Build Swift package
         run: swift build
 
+      - name: Verify thermal model
+        run: ./script/test_thermal_model.sh
+
+      - name: Verify status item presentation
+        run: ./script/test_status_item_presentation.sh
+
+      - name: Verify app launch mode
+        run: ./script/test_app_launch_mode.sh
+
       - name: Package Apple Silicon app
         env:
           ARCHITECTURES: arm64

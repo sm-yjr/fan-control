@@ -1,25 +1,34 @@
-import SwiftUI
 import AppKit
 import Darwin
+import Observation
 
 @main
-struct FanControlApp: App {
-    @CLTState private var appState: AppState
-
-    init() {
-        if CommandLine.arguments.contains("--helper") {
+enum FanControlMain {
+    static func main() {
+        switch FanControlLaunchMode.resolve(arguments: CommandLine.arguments) {
+        case .helper:
             FanControlHelperDaemon.run()
+        case .menuBar:
+            let application = NSApplication.shared
+            let applicationDelegate = FanControlApplicationDelegate()
+            application.delegate = applicationDelegate
+            application.setActivationPolicy(.accessory)
+            withExtendedLifetime(applicationDelegate) {
+                application.run()
+            }
         }
-        _appState = CLTState(initialValue: AppState())
     }
+}
 
-    var body: some Scene {
-        MenuBarExtra {
-            ContentView(appState: appState)
-        } label: {
-            Image(systemName: "fan")
-        }
-        .menuBarExtraStyle(.window)
+final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var appState: AppState?
+    private var statusItemController: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        let appState = AppState()
+        self.appState = appState
+        self.statusItemController = StatusItemController(appState: appState)
     }
 }
 

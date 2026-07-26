@@ -18,23 +18,70 @@ struct FanCurveConfig: Codable, Identifiable, Equatable {
     var sensorKey: String
     var points: [CurvePoint]
     var hysteresis: Double = 3.0
+    var presetVersion: Int?
 
     static let fanOffSpeed: Double = -20
+    static let currentPresetVersion = 2
 
     static func defaultCurve(sensorKey: String) -> FanCurveConfig {
-        FanCurveConfig(
-            name: "Default",
+        if CurveInput.isThermalDemand(sensorKey) {
+            return FanCurveConfig(
+                name: "Balanced Thermal",
+                sensorKey: sensorKey,
+                points: [
+                    CurvePoint(temperature: 0, fanSpeed: FanCurveConfig.fanOffSpeed),
+                    CurvePoint(temperature: 18, fanSpeed: FanCurveConfig.fanOffSpeed),
+                    CurvePoint(temperature: 28, fanSpeed: 0),
+                    CurvePoint(temperature: 45, fanSpeed: 12),
+                    CurvePoint(temperature: 60, fanSpeed: 25),
+                    CurvePoint(temperature: 75, fanSpeed: 45),
+                    CurvePoint(temperature: 88, fanSpeed: 70),
+                    CurvePoint(temperature: 100, fanSpeed: 100),
+                ],
+                hysteresis: 8,
+                presetVersion: currentPresetVersion
+            )
+        }
+
+        return FanCurveConfig(
+            name: "Balanced Temperature",
             sensorKey: sensorKey,
             points: [
                 CurvePoint(temperature: 35, fanSpeed: FanCurveConfig.fanOffSpeed),
-                CurvePoint(temperature: 42, fanSpeed: FanCurveConfig.fanOffSpeed),
-                CurvePoint(temperature: 50, fanSpeed: 0),
-                CurvePoint(temperature: 60, fanSpeed: 25),
-                CurvePoint(temperature: 70, fanSpeed: 45),
-                CurvePoint(temperature: 80, fanSpeed: 70),
-                CurvePoint(temperature: 90, fanSpeed: 100),
-            ]
+                CurvePoint(temperature: 45, fanSpeed: FanCurveConfig.fanOffSpeed),
+                CurvePoint(temperature: 55, fanSpeed: 0),
+                CurvePoint(temperature: 65, fanSpeed: 15),
+                CurvePoint(temperature: 75, fanSpeed: 35),
+                CurvePoint(temperature: 85, fanSpeed: 65),
+                CurvePoint(temperature: 95, fanSpeed: 100),
+            ],
+            hysteresis: 4,
+            presetVersion: currentPresetVersion
         )
+    }
+
+    mutating func setSensorKey(_ newSensorKey: String) {
+        guard newSensorKey != sensorKey else { return }
+        if CurveInput.isThermalDemand(newSensorKey) != CurveInput.isThermalDemand(sensorKey) {
+            let existingID = id
+            self = Self.defaultCurve(sensorKey: newSensorKey)
+            id = existingID
+        } else {
+            sensorKey = newSensorKey
+        }
+    }
+
+    func migratedLegacyDefault() -> FanCurveConfig? {
+        guard sensorKey == "Average CPU",
+              name == "Default",
+              abs(hysteresis - 3) < 0.001,
+              pointsMatch(Self.legacyDefaultPoints) else {
+            return nil
+        }
+
+        var migrated = Self.defaultCurve(sensorKey: CurveInput.thermalDemandKey)
+        migrated.id = id
+        return migrated
     }
 
     func interpolate(temperature: Double) -> Double {
@@ -71,4 +118,23 @@ struct FanCurveConfig: Codable, Identifiable, Equatable {
     static func isFanOffSpeed(_ speed: Double) -> Bool {
         speed < 0
     }
+
+    private func pointsMatch(_ expected: [(Double, Double)]) -> Bool {
+        let sorted = points.sorted { $0.temperature < $1.temperature }
+        guard sorted.count == expected.count else { return false }
+        return zip(sorted, expected).allSatisfy { point, expectedPoint in
+            abs(point.temperature - expectedPoint.0) < 0.001
+                && abs(point.fanSpeed - expectedPoint.1) < 0.001
+        }
+    }
+
+    private static let legacyDefaultPoints: [(Double, Double)] = [
+        (35, fanOffSpeed),
+        (42, fanOffSpeed),
+        (50, 0),
+        (60, 25),
+        (70, 45),
+        (80, 70),
+        (90, 100),
+    ]
 }

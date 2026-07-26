@@ -1,5 +1,11 @@
 import SwiftUI
 
+private enum ControlModeSelection: Hashable {
+    case automatic
+    case manual
+    case curve
+}
+
 struct ContentView: View {
     @Bindable var appState: AppState
 
@@ -34,7 +40,7 @@ struct ContentView: View {
             Divider()
             footerSection
         }
-        .frame(width: 400)
+        .frame(width: 420)
     }
 
     private var permissionBanner: some View {
@@ -72,6 +78,9 @@ struct ContentView: View {
     private var temperatureBar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
+                if sensorManager.thermalDemandAvailable {
+                    loadChip("Heat", sensorManager.thermalDemand)
+                }
                 if sensorManager.averageCPU > 0 {
                     tempChip("CPU", sensorManager.averageCPU)
                 }
@@ -83,17 +92,26 @@ struct ContentView: View {
                     showAllSensors.toggle()
                 } label: {
                     Image(systemName: showAllSensors ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
+                        .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(showAllSensors ? "Hide sensor details" : "Show sensor details")
+                .help(showAllSensors ? "Hide sensor details" : "Show sensor details")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
             if showAllSensors {
                 ScrollView {
-                    SensorListView(sensors: sensorManager.temperatures)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if sensorManager.thermalDemandAvailable {
+                            thermalModelSummary
+                            Divider()
+                        }
+                        SensorListView(sensors: sensorManager.temperatures)
+                    }
                 }
                 .frame(maxHeight: 150)
                 .padding(.horizontal, 12)
@@ -115,40 +133,98 @@ struct ContentView: View {
         .padding(.vertical, 2)
         .background(Color.primary.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 4))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(String(format: "%.0f degrees Celsius", value))
+    }
+
+    private func loadChip(_ label: String, _ value: Double) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(String(format: "%.0f%%", value))
+                .font(.system(.caption, design: .monospaced, weight: .medium))
+                .foregroundStyle(loadColor(value))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Color.primary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(String(format: "%.0f percent", value))
+    }
+
+    private var thermalModelSummary: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("THERMAL MODEL")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            HStack {
+                Text("Sustained silicon")
+                Spacer()
+                Text(String(format: "%.1f°C", sensorManager.sustainedSiliconTemperature))
+                    .font(.system(.caption, design: .monospaced))
+            }
+            if sensorManager.thermalDemandUsesChassisSensor {
+                HStack {
+                    Text("Chassis thermal mass")
+                    Spacer()
+                    Text(String(
+                        format: "%.1f°C · +%.1f°C/min",
+                        sensorManager.chassisTemperature,
+                        sensorManager.chassisRisePerMinute
+                    ))
+                    .font(.system(.caption, design: .monospaced))
+                }
+            } else {
+                Text("No chassis sensor; using sustained silicon fallback")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("System thermal pressure")
+                Spacer()
+                Text(sensorManager.systemThermalPressure.displayName)
+                    .font(.system(.caption, design: .monospaced))
+            }
+        }
+        .font(.caption)
     }
 
     private func tempColor(_ temp: Double) -> Color {
         if temp > 90 { return .red }
         if temp > 75 { return .orange }
-        if temp > 60 { return .yellow }
-        return .green
+        return .primary
+    }
+
+    private func loadColor(_ load: Double) -> Color {
+        if load >= 90 { return .red }
+        if load >= 70 { return .orange }
+        return .primary
     }
 
     // MARK: - Fan tabs
 
     private var fanTabs: some View {
-        HStack(spacing: 0) {
+        let selection = Binding<Int>(
+            get: { min(selectedFanIndex, max(sensorManager.fans.count - 1, 0)) },
+            set: { selectedFanIndex = $0 }
+        )
+
+        return Picker("Fan", selection: selection) {
             ForEach(Array(sensorManager.fans.enumerated()), id: \.element.id) { index, fan in
-                Button {
-                    selectedFanIndex = index
-                } label: {
-                    VStack(spacing: 2) {
-                        Text(fan.name)
-                            .font(.caption)
-                            .fontWeight(selectedFanIndex == index ? .semibold : .regular)
-                        Text("\(Int(fan.currentSpeed)) RPM")
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(selectedFanIndex == index ? Color.accentColor.opacity(0.12) : Color.clear)
-                }
-                .buttonStyle(.plain)
+                Text("\(fan.name) · \(Int(fan.currentSpeed)) RPM")
+                    .tag(index)
             }
-            Spacer()
         }
-        .padding(.horizontal, 4)
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .accessibilityLabel("Fan")
+        .help("Choose the fan to configure")
     }
 
     // MARK: - Curve section (inline primary UI)
@@ -162,7 +238,7 @@ struct ContentView: View {
             let fanId = fan.id
 
             VStack(spacing: 8) {
-                modeRow(fanId: fanId)
+                modeRow(fan: fan)
 
                 if let stateIdx = fanController.fanStates.firstIndex(where: { $0.fanId == fanId }) {
                     let state = fanController.fanStates[stateIdx]
@@ -185,44 +261,67 @@ struct ContentView: View {
 
     // MARK: - Mode row
 
-    private func modeRow(fanId: Int) -> some View {
-        let stateIdx = fanController.fanStates.firstIndex(where: { $0.fanId == fanId })
-        let currentMode = stateIdx.map { fanController.fanStates[$0].mode } ?? .automatic
-
+    private func modeRow(fan: FanInfo) -> some View {
         return HStack(spacing: 8) {
-            modeButton("Auto", isActive: { if case .automatic = currentMode { return true }; return false }()) {
-                fanController.setMode(.automatic, forFan: fanId)
+            Picker("Control mode", selection: controlModeBinding(for: fan)) {
+                Text("Auto").tag(ControlModeSelection.automatic)
+                Text("Manual").tag(ControlModeSelection.manual)
+                Text("Curve").tag(ControlModeSelection.curve)
             }
-            modeButton("Manual", isActive: { if case .manual = currentMode { return true }; return false }()) {
-                let speed = sensorManager.fans.first(where: { $0.id == fanId })?.currentSpeed ?? 1500
-                fanController.setMode(.manual(rpm: Int(speed)), forFan: fanId)
-            }
-            modeButton("Curve", isActive: { if case .curve = currentMode { return true }; return false }()) {
-                let config = stateIdx.flatMap { fanController.fanStates[$0].curveConfig }
-                    ?? FanCurveConfig.defaultCurve(sensorKey: defaultSensorKey)
-                fanController.setCurveConfig(config, forFan: fanId)
-            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
+            .accessibilityLabel("Control mode for \(fan.name)")
 
             Spacer()
 
-            if case .curve = currentMode, let idx = stateIdx {
-                sensorPicker(stateIndex: idx, fanId: fanId)
+            if isCurveMode(fanId: fan.id),
+               let stateIndex = fanController.fanStates.firstIndex(where: { $0.fanId == fan.id }) {
+                sensorPicker(stateIndex: stateIndex, fanId: fan.id)
             }
         }
         .padding(.horizontal, 12)
     }
 
-    private func modeButton(_ title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.12))
-                .foregroundStyle(isActive ? .white : .primary)
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+    private func controlModeBinding(for fan: FanInfo) -> Binding<ControlModeSelection> {
+        Binding(
+            get: {
+                guard let mode = fanController.fanStates.first(where: { $0.fanId == fan.id })?.mode else {
+                    return .automatic
+                }
+                switch mode {
+                case .automatic:
+                    return .automatic
+                case .manual:
+                    return .manual
+                case .curve:
+                    return .curve
+                }
+            },
+            set: { selection in
+                switch selection {
+                case .automatic:
+                    fanController.setMode(.automatic, forFan: fan.id)
+                case .manual:
+                    let currentRPM = max(fan.minSpeed, min(fan.currentSpeed, fan.maxSpeed))
+                    fanController.setMode(.manual(rpm: Int(currentRPM)), forFan: fan.id)
+                case .curve:
+                    let config = fanController.fanStates
+                        .first(where: { $0.fanId == fan.id })?
+                        .curveConfig
+                        ?? FanCurveConfig.defaultCurve(sensorKey: defaultSensorKey)
+                    fanController.setCurveConfig(config, forFan: fan.id)
+                }
+            }
+        )
+    }
+
+    private func isCurveMode(fanId: Int) -> Bool {
+        guard let mode = fanController.fanStates.first(where: { $0.fanId == fanId })?.mode else {
+            return false
         }
-        .buttonStyle(.plain)
+        if case .curve = mode { return true }
+        return false
     }
 
     private func sensorPicker(stateIndex: Int, fanId: Int) -> some View {
@@ -233,11 +332,13 @@ struct ContentView: View {
             set: { newKey in
                 var config = fanController.fanStates[stateIndex].curveConfig
                     ?? FanCurveConfig.defaultCurve(sensorKey: newKey)
-                config.sensorKey = newKey
+                config.setSensorKey(newKey)
                 fanController.setCurveConfig(config, forFan: fanId)
             }
         )
         return Picker("", selection: binding) {
+            Text("Thermal Load").tag(CurveInput.thermalDemandKey)
+            Divider()
             Text("CPU Avg").tag("Average CPU")
             Text("CPU Max").tag("Hottest CPU")
             if sensorManager.averageGPU > 0 {
@@ -246,8 +347,10 @@ struct ContentView: View {
             }
         }
         .pickerStyle(.menu)
-        .frame(width: 100)
-        .font(.caption)
+        .labelsHidden()
+        .frame(width: 132)
+        .accessibilityLabel("Curve control source")
+        .help("Choose the temperature or thermal-load signal used by this curve")
     }
 
     // MARK: - Inline curve editor
@@ -275,8 +378,9 @@ struct ContentView: View {
                         configBinding.wrappedValue = c
                     }
                 ),
-                currentTemperature: currentTemp(for: sensorKey),
-                currentSpeed: currentCurveSpeed(configBinding.wrappedValue, sensorKey: sensorKey)
+                currentInput: currentInput(for: sensorKey),
+                currentSpeed: currentCurveSpeed(configBinding.wrappedValue, sensorKey: sensorKey),
+                isThermalDemand: CurveInput.isThermalDemand(sensorKey)
             )
             .frame(height: 200)
             .padding(.horizontal, 4)
@@ -294,18 +398,26 @@ struct ContentView: View {
                             configBinding.wrappedValue = c
                         }
                     ),
-                    in: 0...10, step: 0.5
-                )
-                Text(String(format: "%.1f°C", configBinding.wrappedValue.hysteresis))
+                    in: CurveInput.isThermalDemand(sensorKey) ? 0...20 : 0...10,
+                    step: 0.5
+                ) {
+                    Text("Hysteresis")
+                }
+                .labelsHidden()
+                .accessibilityValue(hysteresisText(
+                    configBinding.wrappedValue.hysteresis,
+                    sensorKey: sensorKey
+                ))
+                Text(hysteresisText(configBinding.wrappedValue.hysteresis, sensorKey: sensorKey))
                     .font(.system(.caption, design: .monospaced))
-                    .frame(width: 40)
+                    .frame(width: 54)
 
                 Button("Reset Curve") {
                     fanController.resetCurve(forFan: fanId)
                 }
-                .font(.caption)
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Restore the default curve for this fan")
             }
             .padding(.horizontal, 12)
         }
@@ -324,7 +436,11 @@ struct ContentView: View {
                 ),
                 in: fan.minSpeed...fan.maxSpeed,
                 step: 50
-            )
+            ) {
+                Text("Target fan speed")
+            }
+            .labelsHidden()
+            .accessibilityValue("\(rpm) RPM")
             HStack {
                 Text("\(Int(fan.minSpeed))")
                 Spacer()
@@ -377,27 +493,30 @@ struct ContentView: View {
                 .frame(width: 32, alignment: .trailing)
         }
         .padding(.horizontal, 12)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(fan.name) speed")
+        .accessibilityValue("\(Int(fan.currentSpeed)) RPM, \(Int(percent)) percent")
     }
 
     // MARK: - Helpers
 
     private var defaultSensorKey: String {
-        sensorManager.averageCPU > 0 ? "Average CPU" : (sensorManager.temperatures.first?.key ?? "")
+        sensorManager.preferredCurveSensorKey
     }
 
-    private func currentTemp(for sensorKey: String) -> Double {
-        switch sensorKey {
-        case "Average CPU": sensorManager.averageCPU
-        case "Average GPU": sensorManager.averageGPU
-        case "Hottest CPU": sensorManager.hottestCPU
-        case "Hottest GPU": sensorManager.hottestGPU
-        default: sensorManager.temperatures.first(where: { $0.key == sensorKey })?.value ?? 0
-        }
+    private func currentInput(for sensorKey: String) -> Double {
+        sensorManager.curveInputValue(for: sensorKey) ?? 0
     }
 
     private func currentCurveSpeed(_ config: FanCurveConfig, sensorKey: String) -> Double {
-        let temperature = currentTemp(for: sensorKey)
-        return config.interpolate(temperature: temperature)
+        config.interpolate(temperature: currentInput(for: sensorKey))
+    }
+
+    private func hysteresisText(_ hysteresis: Double, sensorKey: String) -> String {
+        if CurveInput.isThermalDemand(sensorKey) {
+            return String(format: "%.1f%%", hysteresis)
+        }
+        return String(format: "%.1f°C", hysteresis)
     }
 
     // MARK: - Footer
@@ -409,17 +528,16 @@ struct ContentView: View {
                     fanController.setMode(.automatic, forFan: fan.id)
                 }
             }
-            .font(.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Return every fan to system automatic control")
 
             if appState.updateController.isAvailable {
                 Button("Check for Updates") {
                     appState.updateController.checkForUpdates()
                 }
-                .font(.caption)
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
             }
 
             Spacer()
@@ -428,9 +546,9 @@ struct ContentView: View {
                 fanController.stop()
                 NSApplication.shared.terminate(nil)
             }
-            .font(.caption)
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .keyboardShortcut("q")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

@@ -112,14 +112,34 @@ final class SensorManager {
     var averageGPU: Double = 0
     var hottestCPU: Double = 0
     var hottestGPU: Double = 0
+    var thermalDemand: Double = 0
+    var sustainedSiliconTemperature: Double = 0
+    var chassisTemperature: Double = 0
+    var chassisRisePerMinute: Double = 0
+    var systemThermalPressure: SystemThermalPressure = .nominal
+    var thermalDemandUsesChassisSensor = false
+    var thermalDemandAvailable = false
 
     private let smc = SMCKit.shared
     private var timer: Timer?
     private var isRefreshInFlight = false
     private var didDiscoverSensors = false
+    private var thermalDemandEstimator = ThermalDemandEstimator()
+    private var lastThermalSampleUptime: TimeInterval?
+    private var lastLoggedThermalDemandBucket: Int?
     var onSnapshotUpdated: (() -> Void)?
 
     init() {}
+
+    var preferredCurveSensorKey: String {
+        if thermalDemandAvailable { return CurveInput.thermalDemandKey }
+        if averageCPU > 0 { return "Average CPU" }
+        return temperatures.first?.key ?? ""
+    }
+
+    var hottestSiliconTemperature: Double {
+        max(hottestCPU, hottestGPU)
+    }
 
     func startPolling(interval: TimeInterval = 2.0) {
         timer?.invalidate()
@@ -183,6 +203,55 @@ final class SensorManager {
         averageGPU = snapshot.averageGPU
         hottestCPU = snapshot.hottestCPU
         hottestGPU = snapshot.hottestGPU
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = lastThermalSampleUptime.map { now - $0 } ?? 0
+        lastThermalSampleUptime = now
+        let pressure = SystemThermalPressure(ProcessInfo.processInfo.thermalState)
+        let reading = thermalDemandEstimator.update(
+            siliconTemperature: snapshot.siliconTemperature,
+            chassisTemperature: snapshot.chassisTemperature,
+            emergencySiliconTemperature: snapshot.emergencySiliconTemperature,
+            pressure: pressure,
+            elapsed: elapsed
+        )
+        thermalDemand = reading.demandPercent
+        sustainedSiliconTemperature = reading.sustainedSiliconTemperature
+        chassisTemperature = reading.chassisTemperature
+        chassisRisePerMinute = reading.chassisRisePerMinute
+        systemThermalPressure = reading.pressure
+        thermalDemandUsesChassisSensor = reading.usesChassisSensor
+        thermalDemandAvailable = snapshot.siliconTemperature != nil || snapshot.chassisTemperature != nil
+
+        let demandBucket = Int(reading.demandPercent / 5) * 5
+        if demandBucket != lastLoggedThermalDemandBucket {
+            lastLoggedThermalDemandBucket = demandBucket
+            debugLog(
+                "[FanControl] thermalDemand percent=\(String(format: "%.1f", reading.demandPercent)) "
+                    + "silicon=\(String(format: "%.1f", reading.sustainedSiliconTemperature)) "
+                    + "chassis=\(String(format: "%.1f", reading.chassisTemperature)) "
+                    + "risePerMinute=\(String(format: "%.2f", reading.chassisRisePerMinute)) "
+                    + "pressure=\(reading.pressure.displayName) "
+                    + "usesChassis=\(reading.usesChassisSensor)"
+            )
+        }
+    }
+
+    func curveInputValue(for sensorKey: String) -> Double? {
+        switch sensorKey {
+        case CurveInput.thermalDemandKey:
+            thermalDemandAvailable ? thermalDemand : nil
+        case "Average CPU":
+            averageCPU > 0 ? averageCPU : nil
+        case "Average GPU":
+            averageGPU > 0 ? averageGPU : nil
+        case "Hottest CPU":
+            hottestCPU > 0 ? hottestCPU : nil
+        case "Hottest GPU":
+            hottestGPU > 0 ? hottestGPU : nil
+        default:
+            temperatures.first(where: { $0.key == sensorKey })?.value
+        }
     }
 
     private static func discoverSnapshot(using smc: SMCKit) -> SensorSnapshot {
@@ -291,13 +360,30 @@ final class SensorManager {
             hottestGPU = gpuTemps.max() ?? 0
         }
 
+        let siliconTemperature = [averageCPU, averageGPU]
+            .filter { $0 > 0 }
+            .max()
+        let emergencySiliconTemperature = [hottestCPU, hottestGPU]
+            .filter { $0 > 0 }
+            .max()
+        let chassisValues = temperatures
+            .filter {
+                $0.group == .system
+                    && $0.key != "TW0P"
+            }
+            .map(\.value)
+        let chassisTemperature = ThermalDemandEstimator.representativeTemperature(chassisValues)
+
         return SensorSnapshot(
             fans: fans,
             temperatures: temperatures,
             averageCPU: averageCPU,
             averageGPU: averageGPU,
             hottestCPU: hottestCPU,
-            hottestGPU: hottestGPU
+            hottestGPU: hottestGPU,
+            siliconTemperature: siliconTemperature,
+            emergencySiliconTemperature: emergencySiliconTemperature,
+            chassisTemperature: chassisTemperature
         )
     }
 }
@@ -309,4 +395,7 @@ private struct SensorSnapshot {
     let averageGPU: Double
     let hottestCPU: Double
     let hottestGPU: Double
+    let siliconTemperature: Double?
+    let emergencySiliconTemperature: Double?
+    let chassisTemperature: Double?
 }
