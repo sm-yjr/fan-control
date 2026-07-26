@@ -3,6 +3,7 @@ import Darwin
 
 enum FanHelperConstants {
     static let label = "com.local.fan-control.helper"
+    static let protocolVersion = 2
     static let socketPath = "/var/run/com.local.fan-control.helper.sock"
     static let helperToolPath = "/Library/PrivilegedHelperTools/\(label)"
     static let launchDaemonPath = "/Library/LaunchDaemons/\(label).plist"
@@ -26,6 +27,7 @@ struct FanHelperResponse: Codable {
     var ok: Bool
     var message: String
     var isRoot: Bool
+    var protocolVersion: Int? = nil
 }
 
 enum FanControlHelperClient {
@@ -228,7 +230,15 @@ enum FanControlHelperDaemon {
 
         switch request.command {
         case .status:
-            writeResponse(FanHelperResponse(ok: true, message: "ready", isRoot: true), to: clientFD)
+            writeResponse(
+                FanHelperResponse(
+                    ok: true,
+                    message: "ready",
+                    isRoot: true,
+                    protocolVersion: FanHelperConstants.protocolVersion
+                ),
+                to: clientFD
+            )
         case .setFanMode:
             guard let fanId = request.fanId, let mode = request.mode else {
                 writeResponse(FanHelperResponse(ok: false, message: "missing fan mode", isRoot: true), to: clientFD)

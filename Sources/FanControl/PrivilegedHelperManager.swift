@@ -80,7 +80,21 @@ enum PrivilegedHelperManager {
         Thread.sleep(forTimeInterval: 0.3)
         let status = FanControlHelperClient.status(timeout: 2.0)
         debugLog("[FanControl] installHelper status ok=\(status.ok) message=\(status.message)")
-        return status.ok ? status : FanHelperResponse(ok: false, message: "installed but helper did not respond: \(status.message)", isRoot: false)
+        guard status.ok else {
+            return FanHelperResponse(
+                ok: false,
+                message: "installed but helper did not respond: \(status.message)",
+                isRoot: false
+            )
+        }
+        guard status.protocolVersion == FanHelperConstants.protocolVersion else {
+            return FanHelperResponse(
+                ok: false,
+                message: "installed helper version could not be verified",
+                isRoot: false
+            )
+        }
+        return status
     }
 
     private static func shellQuote(_ value: String) -> String {

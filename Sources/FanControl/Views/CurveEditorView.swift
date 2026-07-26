@@ -6,8 +6,8 @@ struct CurveEditorSheet: View {
     let fanId: Int
     @Environment(\.dismiss) private var dismiss
 
-    @State private var config: FanCurveConfig
-    @State private var selectedSensorKey: String
+    @CLTState private var config: FanCurveConfig
+    @CLTState private var selectedSensorKey: String
 
     init(fanController: FanController, sensorManager: SensorManager, fanId: Int) {
         self.fanController = fanController
@@ -17,8 +17,8 @@ struct CurveEditorSheet: View {
         let existing = fanController.fanStates.first(where: { $0.fanId == fanId })?.curveConfig
         let defaultSensor = sensorManager.averageCPU > 0 ? "Average CPU" : (sensorManager.temperatures.first?.key ?? "")
         let cfg = existing ?? FanCurveConfig.defaultCurve(sensorKey: defaultSensor)
-        self._config = State(initialValue: cfg)
-        self._selectedSensorKey = State(initialValue: cfg.sensorKey)
+        self._config = CLTState(initialValue: cfg)
+        self._selectedSensorKey = CLTState(initialValue: cfg.sensorKey)
     }
 
     var body: some View {
@@ -116,7 +116,7 @@ struct CurveEditorView: View {
     private let speedRange: ClosedRange<Double> = FanCurveConfig.fanOffSpeed...100
     private let padding: CGFloat = 40
 
-    @State private var draggingPointId: UUID?
+    @CLTState private var draggingPointId: UUID?
 
     var body: some View {
         GeometryReader { geo in
