@@ -85,14 +85,15 @@ https://github.com/sm-yjr/fan-control/releases/latest/download/appcast.xml
 发布工作流需要以下 GitHub Actions Secrets：
 
 ```text
-MACOS_CERTIFICATE
+MACOS_CERTIFICATE_P12_BASE64
 MACOS_CERTIFICATE_PASSWORD
 APPLE_ID
+APPLE_TEAM_ID
 APPLE_APP_SPECIFIC_PASSWORD
 SPARKLE_PRIVATE_KEY
 ```
 
-`MACOS_CERTIFICATE` 是 Developer ID Application 的 PKCS#12 文件经过 Base64 编码后的内容。`APPLE_APP_SPECIFIC_PASSWORD` 用于 `notarytool`。Sparkle 私钥只保存在 GitHub Actions Secrets 和发布者钥匙串中；仓库只包含对应公钥。
+`MACOS_CERTIFICATE_P12_BASE64` 是 Developer ID Application 的 PKCS#12 文件经过 Base64 编码后的内容。`APPLE_APP_SPECIFIC_PASSWORD` 用于 `notarytool`。Sparkle 私钥只保存在 GitHub Actions Secrets 和发布者钥匙串中；仓库只包含对应公钥。
 
 ## 许可证
 

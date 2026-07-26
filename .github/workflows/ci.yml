@@ -40,6 +40,7 @@ jobs:
           test -d "$APP/Contents/Frameworks/Sparkle.framework"
           test -f "$APP/Contents/Resources/FanControl-LICENSE.txt"
           test -f "$APP/Contents/Resources/Sparkle-LICENSE.txt"
+          test -x script/sign_app.sh
 
           if otool -L "$APP/Contents/MacOS/FanControl" | grep -q "Sparkle.framework"; then
             echo "The standalone helper executable must not link Sparkle.framework." >&2

@@ -138,11 +138,10 @@ PLIST
 
 if [[ -n "$CODE_SIGN_IDENTITY" ]]; then
   echo "Signing with $CODE_SIGN_IDENTITY..."
-  codesign --force --deep --options runtime --timestamp \
-    --sign "$CODE_SIGN_IDENTITY" "$APP_BUNDLE"
+  "$ROOT_DIR/script/sign_app.sh" "$APP_BUNDLE" "$CODE_SIGN_IDENTITY" 1
 elif [[ "$AD_HOC_CODE_SIGN" == "1" ]]; then
   echo "Applying an ad-hoc signature for local development..."
-  codesign --force --deep --sign - "$APP_BUNDLE"
+  "$ROOT_DIR/script/sign_app.sh" "$APP_BUNDLE" - 0
 fi
 
 plutil -lint "$INFO_PLIST" >/dev/null
