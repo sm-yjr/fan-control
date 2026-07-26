@@ -1,123 +1,5 @@
 import SwiftUI
 
-struct CurveEditorSheet: View {
-    @Bindable var fanController: FanController
-    @Bindable var sensorManager: SensorManager
-    let fanId: Int
-    @Environment(\.dismiss) private var dismiss
-
-    @CLTState private var config: FanCurveConfig
-    @CLTState private var selectedSensorKey: String
-
-    init(fanController: FanController, sensorManager: SensorManager, fanId: Int) {
-        self.fanController = fanController
-        self.sensorManager = sensorManager
-        self.fanId = fanId
-
-        let existing = fanController.fanStates.first(where: { $0.fanId == fanId })?.curveConfig
-        let defaultSensor = sensorManager.preferredCurveSensorKey
-        let cfg = existing ?? FanCurveConfig.defaultCurve(sensorKey: defaultSensor)
-        self._config = CLTState(initialValue: cfg)
-        self._selectedSensorKey = CLTState(initialValue: cfg.sensorKey)
-    }
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("Fan Curve Editor")
-                .font(.headline)
-
-            sensorPicker
-
-            CurveEditorView(
-                points: $config.points,
-                currentInput: currentInput,
-                currentSpeed: currentSpeedPercent,
-                isThermalDemand: CurveInput.isThermalDemand(selectedSensorKey)
-            )
-            .frame(height: 250)
-
-            hysteresisSlider
-
-            HStack {
-                Button("Reset to Default") {
-                    config = FanCurveConfig.defaultCurve(sensorKey: selectedSensorKey)
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Apply") {
-                    config.setSensorKey(selectedSensorKey)
-                    fanController.setCurveConfig(config, forFan: fanId)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        .frame(width: 480)
-        .onChange(of: selectedSensorKey) { _, newValue in
-            config.setSensorKey(newValue)
-        }
-    }
-
-    private var sensorPicker: some View {
-        HStack {
-            Text("Control Source:")
-                .font(.subheadline)
-            Picker("", selection: $selectedSensorKey) {
-                if sensorManager.thermalDemandAvailable {
-                    Text("Thermal Load (\(String(format: "%.0f%%", sensorManager.thermalDemand)))")
-                        .tag(CurveInput.thermalDemandKey)
-                    Divider()
-                }
-                if sensorManager.averageCPU > 0 {
-                    Text("Average CPU").tag("Average CPU")
-                    Text("Hottest CPU").tag("Hottest CPU")
-                }
-                if sensorManager.averageGPU > 0 {
-                    Text("Average GPU").tag("Average GPU")
-                    Text("Hottest GPU").tag("Hottest GPU")
-                }
-                Divider()
-                ForEach(sensorManager.temperatures) { sensor in
-                    Text("\(sensor.name) (\(String(format: "%.0f°C", sensor.value)))")
-                        .tag(sensor.key)
-                }
-            }
-            .frame(width: 200)
-        }
-    }
-
-    private var hysteresisSlider: some View {
-        HStack {
-            Text("Hysteresis:")
-                .font(.subheadline)
-            Slider(
-                value: $config.hysteresis,
-                in: CurveInput.isThermalDemand(selectedSensorKey) ? 0...20 : 0...10,
-                step: 0.5
-            )
-            Text(hysteresisText)
-                .font(.system(.subheadline, design: .monospaced))
-                .frame(width: 62)
-        }
-    }
-
-    private var currentInput: Double {
-        sensorManager.curveInputValue(for: selectedSensorKey) ?? 0
-    }
-
-    private var currentSpeedPercent: Double {
-        config.interpolate(temperature: currentInput)
-    }
-
-    private var hysteresisText: String {
-        if CurveInput.isThermalDemand(selectedSensorKey) {
-            return String(format: "%.1f%%", config.hysteresis)
-        }
-        return String(format: "%.1f°C", config.hysteresis)
-    }
-}
-
 struct CurveEditorView: View {
     @Binding var points: [CurvePoint]
     var currentInput: Double
@@ -152,8 +34,7 @@ struct CurveEditorView: View {
             .accessibilityLabel("Fan curve editor")
             .accessibilityHint("Curve points provide actions for adjusting input and fan speed")
         }
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .fanUISurface()
         .help("Double-click to add a curve point; drag a point to adjust it")
     }
 

@@ -210,8 +210,10 @@ private final class StatusFanImageView: NSImageView {
             appliedLevel = presentation.level
         }
 
-        guard presentation.shouldAnimate(reduceMotion: reduceMotion),
-              let rotationPeriod = presentation.rotationPeriod else {
+        guard let rotationPeriod = FanUIMotion.resolvedDuration(
+            presentation.rotationPeriod,
+            reduceMotion: reduceMotion
+        ), rotationPeriod > 0 else {
             stopRotation()
             return
         }

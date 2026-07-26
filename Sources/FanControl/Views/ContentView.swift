@@ -41,51 +41,75 @@ struct ContentView: View {
             footerSection
         }
         .frame(width: 420)
+        .background(FanUIColorRole.background.color)
     }
 
     private var permissionBanner: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "lock.trianglebadge.exclamationmark")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Fan control needs privileged helper")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                Text(appState.helperMessage ?? "Install once with administrator approval, then double-click works normally.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                appState.installHelper()
-            } label: {
-                if appState.isInstallingHelper {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Text("Enable")
+        FanSection {
+            FanCard(padding: .medium) {
+                HStack(
+                    alignment: .top,
+                    spacing: FanUISpacing.medium.points
+                ) {
+                    Image(systemName: "lock.trianglebadge.exclamationmark")
+                        .foregroundStyle(FanUIColorRole.warning.color)
+                    VStack(
+                        alignment: .leading,
+                        spacing: FanUISpacing.hairline.points
+                    ) {
+                        Text("Fan control needs privileged helper")
+                            .font(FanUITextStyle.label.font)
+                            .fontWeight(.medium)
+                        Text(appState.helperMessage ?? "Install once with administrator approval, then double-click works normally.")
+                            .font(FanUITextStyle.metadata.font)
+                            .foregroundStyle(FanUIColorRole.secondaryText.color)
+                    }
+                    Spacer()
+                    Button {
+                        appState.installHelper()
+                    } label: {
+                        if appState.isInstallingHelper {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Enable")
+                        }
+                    }
+                    .font(FanUITextStyle.label.font)
+                    .disabled(appState.isInstallingHelper)
                 }
             }
-            .font(.caption)
-            .disabled(appState.isInstallingHelper)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     // MARK: - Temperature bar
 
     private var temperatureBar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: FanUISpacing.large.points) {
                 if sensorManager.thermalDemandAvailable {
-                    loadChip("Heat", sensorManager.thermalDemand)
+                    FanMetricBadge(
+                        label: "Heat",
+                        presentation: .thermalLoad(
+                            sensorManager.thermalDemand
+                        )
+                    )
                 }
                 if sensorManager.averageCPU > 0 {
-                    tempChip("CPU", sensorManager.averageCPU)
+                    FanMetricBadge(
+                        label: "CPU",
+                        presentation: .temperatureSummary(
+                            sensorManager.averageCPU
+                        )
+                    )
                 }
                 if sensorManager.averageGPU > 0 {
-                    tempChip("GPU", sensorManager.averageGPU)
+                    FanMetricBadge(
+                        label: "GPU",
+                        presentation: .temperatureSummary(
+                            sensorManager.averageGPU
+                        )
+                    )
                 }
                 Spacer()
                 Button {
@@ -100,12 +124,15 @@ struct ContentView: View {
                 .accessibilityLabel(showAllSensors ? "Hide sensor details" : "Show sensor details")
                 .help(showAllSensors ? "Hide sensor details" : "Show sensor details")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, FanUISpacing.large.points)
+            .padding(.vertical, FanUISpacing.medium.points)
 
             if showAllSensors {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(
+                        alignment: .leading,
+                        spacing: FanUISpacing.small.points
+                    ) {
                         if sensorManager.thermalDemandAvailable {
                             thermalModelSummary
                             Divider()
@@ -114,95 +141,46 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxHeight: 150)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 6)
+                .padding(.horizontal, FanUISpacing.large.points)
+                .padding(.bottom, FanUISpacing.small.points)
             }
         }
-    }
-
-    private func tempChip(_ label: String, _ value: Double) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(String(format: "%.0f°C", value))
-                .font(.system(.caption, design: .monospaced, weight: .medium))
-                .foregroundStyle(tempColor(value))
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(Color.primary.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue(String(format: "%.0f degrees Celsius", value))
-    }
-
-    private func loadChip(_ label: String, _ value: Double) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(String(format: "%.0f%%", value))
-                .font(.system(.caption, design: .monospaced, weight: .medium))
-                .foregroundStyle(loadColor(value))
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(Color.primary.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue(String(format: "%.0f percent", value))
     }
 
     private var thermalModelSummary: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(
+            alignment: .leading,
+            spacing: FanUISpacing.hairline.points
+        ) {
             Text("THERMAL MODEL")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            HStack {
-                Text("Sustained silicon")
-                Spacer()
-                Text(String(format: "%.1f°C", sensorManager.sustainedSiliconTemperature))
-                    .font(.system(.caption, design: .monospaced))
-            }
+                .font(FanUITextStyle.sectionHeading.font)
+                .foregroundStyle(FanUIColorRole.secondaryText.color)
+            FanStatusRow(
+                title: "Sustained silicon",
+                value: String(
+                    format: "%.1f°C",
+                    sensorManager.sustainedSiliconTemperature
+                )
+            )
             if sensorManager.thermalDemandUsesChassisSensor {
-                HStack {
-                    Text("Chassis thermal mass")
-                    Spacer()
-                    Text(String(
+                FanStatusRow(
+                    title: "Chassis thermal mass",
+                    value: String(
                         format: "%.1f°C · +%.1f°C/min",
                         sensorManager.chassisTemperature,
                         sensorManager.chassisRisePerMinute
-                    ))
-                    .font(.system(.caption, design: .monospaced))
-                }
+                    )
+                )
             } else {
                 Text("No chassis sensor; using sustained silicon fallback")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(FanUITextStyle.metadata.font)
+                    .foregroundStyle(FanUIColorRole.secondaryText.color)
             }
-            HStack {
-                Text("System thermal pressure")
-                Spacer()
-                Text(sensorManager.systemThermalPressure.displayName)
-                    .font(.system(.caption, design: .monospaced))
-            }
+            FanStatusRow(
+                title: "System thermal pressure",
+                value: sensorManager.systemThermalPressure.displayName
+            )
         }
-        .font(.caption)
-    }
-
-    private func tempColor(_ temp: Double) -> Color {
-        if temp > 90 { return .red }
-        if temp > 75 { return .orange }
-        return .primary
-    }
-
-    private func loadColor(_ load: Double) -> Color {
-        if load >= 90 { return .red }
-        if load >= 70 { return .orange }
-        return .primary
     }
 
     // MARK: - Fan tabs
@@ -221,8 +199,8 @@ struct ContentView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, FanUISpacing.large.points)
+        .padding(.vertical, FanUISpacing.medium.points)
         .accessibilityLabel("Fan")
         .help("Choose the fan to configure")
     }
@@ -237,7 +215,7 @@ struct ContentView: View {
             let fan = sensorManager.fans[safeFanIndex]
             let fanId = fan.id
 
-            VStack(spacing: 8) {
+            VStack(spacing: FanUISpacing.medium.points) {
                 modeRow(fan: fan)
 
                 if let stateIdx = fanController.fanStates.firstIndex(where: { $0.fanId == fanId }) {
@@ -255,23 +233,22 @@ struct ContentView: View {
 
                 speedIndicator(fan: fan)
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, FanUISpacing.medium.points)
         }
     }
 
     // MARK: - Mode row
 
     private func modeRow(fan: FanInfo) -> some View {
-        return HStack(spacing: 8) {
-            Picker("Control mode", selection: controlModeBinding(for: fan)) {
+        return HStack(spacing: FanUISpacing.medium.points) {
+            FanModeSelector(
+                "Control mode for \(fan.name)",
+                selection: controlModeBinding(for: fan)
+            ) {
                 Text("Auto").tag(ControlModeSelection.automatic)
                 Text("Manual").tag(ControlModeSelection.manual)
                 Text("Curve").tag(ControlModeSelection.curve)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 220)
-            .accessibilityLabel("Control mode for \(fan.name)")
 
             Spacer()
 
@@ -280,7 +257,7 @@ struct ContentView: View {
                 sensorPicker(stateIndex: stateIndex, fanId: fan.id)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, FanUISpacing.large.points)
     }
 
     private func controlModeBinding(for fan: FanInfo) -> Binding<ControlModeSelection> {
@@ -368,7 +345,7 @@ struct ContentView: View {
 
         let sensorKey = configBinding.wrappedValue.sensorKey
 
-        return VStack(spacing: 6) {
+        return VStack(spacing: FanUISpacing.small.points) {
             CurveEditorView(
                 points: Binding(
                     get: { configBinding.wrappedValue.points },
@@ -383,12 +360,12 @@ struct ContentView: View {
                 isThermalDemand: CurveInput.isThermalDemand(sensorKey)
             )
             .frame(height: 200)
-            .padding(.horizontal, 4)
+            .padding(.horizontal, FanUISpacing.xSmall.points)
 
             HStack {
                 Text("Hysteresis")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(FanUITextStyle.label.font)
+                    .foregroundStyle(FanUIColorRole.secondaryText.color)
                 Slider(
                     value: Binding(
                         get: { configBinding.wrappedValue.hysteresis },
@@ -409,7 +386,7 @@ struct ContentView: View {
                     sensorKey: sensorKey
                 ))
                 Text(hysteresisText(configBinding.wrappedValue.hysteresis, sensorKey: sensorKey))
-                    .font(.system(.caption, design: .monospaced))
+                    .font(FanUITextStyle.statusValue.font)
                     .frame(width: 54)
 
                 Button("Reset Curve") {
@@ -419,14 +396,14 @@ struct ContentView: View {
                 .controlSize(.small)
                 .help("Restore the default curve for this fan")
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, FanUISpacing.large.points)
         }
     }
 
     // MARK: - Manual slider
 
     private func manualSlider(fanId: Int, fan: FanInfo, rpm: Int) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: FanUISpacing.xSmall.points) {
             Slider(
                 value: Binding(
                     get: { Double(rpm) },
@@ -448,54 +425,38 @@ struct ContentView: View {
                 Spacer()
                 Text("\(Int(fan.maxSpeed))")
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(FanUITextStyle.metadata.font)
+            .foregroundStyle(FanUIColorRole.secondaryText.color)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, FanUISpacing.large.points)
+        .padding(.vertical, FanUISpacing.medium.points)
     }
 
     // MARK: - Auto indicator
 
     private var autoIndicator: some View {
-        HStack {
-            Image(systemName: "checkmark.circle")
-                .foregroundStyle(.green)
-            Text("System auto control")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 20)
+        FanStatusRow(
+            title: "Fan control",
+            value: "System automatic",
+            systemImage: "checkmark.circle",
+            tone: .success
+        )
+        .padding(.horizontal, FanUISpacing.large.points)
+        .padding(.vertical, FanUISpacing.xxLarge.points)
     }
 
     // MARK: - Speed indicator
 
     private func speedIndicator(fan: FanInfo) -> some View {
-        let percent = fan.maxSpeed > fan.minSpeed
-            ? max(0, min(100, (fan.currentSpeed - fan.minSpeed) / (fan.maxSpeed - fan.minSpeed) * 100))
-            : 0
-
-        return HStack(spacing: 6) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.secondary.opacity(0.12))
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(percent > 80 ? Color.red : percent > 50 ? Color.orange : Color.accentColor)
-                        .frame(width: geo.size.width * percent / 100)
-                }
-            }
-            .frame(height: 4)
-
-            Text(String(format: "%.0f%%", percent))
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 32, alignment: .trailing)
-        }
-        .padding(.horizontal, 12)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(fan.name) speed")
-        .accessibilityValue("\(Int(fan.currentSpeed)) RPM, \(Int(percent)) percent")
+        FanProgressStatusRow(
+            presentation: .fanSpeed(
+                currentRPM: fan.currentSpeed,
+                minimumRPM: fan.minSpeed,
+                maximumRPM: fan.maxSpeed,
+                fanName: fan.name
+            )
+        )
+        .padding(.horizontal, FanUISpacing.large.points)
     }
 
     // MARK: - Helpers
@@ -532,12 +493,10 @@ struct ContentView: View {
             .controlSize(.small)
             .help("Return every fan to system automatic control")
 
-            if appState.updateController.isAvailable {
-                Button("Check for Updates") {
-                    appState.updateController.checkForUpdates()
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
+            FanUpdateButton(
+                updaterAvailable: appState.updateController.isAvailable
+            ) {
+                appState.updateController.checkForUpdates()
             }
 
             Spacer()
@@ -550,7 +509,7 @@ struct ContentView: View {
             .controlSize(.small)
             .keyboardShortcut("q")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, FanUISpacing.large.points)
+        .padding(.vertical, FanUISpacing.medium.points)
     }
 }

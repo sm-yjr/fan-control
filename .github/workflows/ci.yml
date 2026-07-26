@@ -23,6 +23,9 @@ jobs:
       - name: Build Swift package
         run: swift build
 
+      - name: Verify FanUI foundation and components
+        run: ./script/test_fan_ui.sh
+
       - name: Verify thermal model
         run: ./script/test_thermal_model.sh
 
@@ -31,6 +34,9 @@ jobs:
 
       - name: Verify app launch mode
         run: ./script/test_app_launch_mode.sh
+
+      - name: Verify packaged Sparkle runtime
+        run: ./script/test_update_runtime.sh
 
       - name: Package Apple Silicon app
         env:

@@ -19,7 +19,14 @@ fi
 sign_target() {
   local target="$1"
   shift
-  local arguments=(--force --options runtime)
+  local arguments=(--force)
+  # Hardened Runtime enables Library Validation. Developer ID signs every
+  # nested Sparkle component with the same Team ID, so release builds satisfy
+  # that requirement. Ad-hoc signatures have no Team ID; enabling the runtime
+  # there makes macOS reject Sparkle even though the bundle verifies cleanly.
+  if [[ "$IDENTITY" != "-" ]]; then
+    arguments+=(--options runtime)
+  fi
   if [[ "$USE_TIMESTAMP" == "1" ]]; then
     arguments+=(--timestamp)
   fi

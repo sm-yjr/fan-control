@@ -42,9 +42,11 @@ helper 只监听本机 Unix domain socket。应用升级后，如果 helper 协�
 
 ```bash
 ./script/build_and_run.sh build
+./script/test_fan_ui.sh
 ./script/test_thermal_model.sh
 ./script/test_status_item_presentation.sh
 ./script/test_app_launch_mode.sh
+./script/test_update_runtime.sh
 ./script/build_and_run.sh --verify
 ./script/build_and_run.sh --logs
 ./script/build_and_run.sh --telemetry
@@ -63,6 +65,8 @@ ARCHITECTURES=arm64 \
 
 构建脚本会从 Sparkle 官方 GitHub Release 下载 2.9.2，校验 SHA-256 后再复制框架。`.app` 内的可执行文件通过运行时桥接加载 Sparkle，因此被单独复制到 privileged helper 目录后仍能启动。
 
+`test_update_runtime.sh` 会生成本地 ad-hoc 签名的测试应用，并通过隐藏的 `--check-updater-runtime` 诊断模式确认 Sparkle 能实际加载。该模式不会启动传感器、helper 或风扇控制。正式 Developer ID 构建保留 Hardened Runtime；没有 Team ID 的本地 ad-hoc 构建关闭 Hardened Runtime，避免 Library Validation 拒绝同样采用 ad-hoc 签名的 Sparkle。
+
 ## 界面与状态栏反馈
 
 界面继续使用原生 SwiftUI 控件，风扇和控制模式使用 macOS 分段选择器，控制源使用菜单选择器。温度、热负荷和转速同时提供文本值，颜色只用于补充风险层级；展开按钮、滑块、曲线控制点和状态栏图标均提供辅助功能标签或操作。
@@ -77,7 +81,9 @@ ARCHITECTURES=arm64 \
 
 状态项沿用 [Stats](https://github.com/exelban/stats) 等开源 macOS 菜单栏工具的原生 `NSStatusItem` 结构，弹窗内容仍由 SwiftUI 承载。风扇 SF Symbol 放在状态栏按钮的 18×18 pt 正方形子视图中，Core Animation 围绕图层中心执行线性旋转，应用进程无需按帧切换图片或重新计算 SwiftUI 视图。停转或系统开启“减少动态效果”时会移除动画。图标粗细、不透明度、工具提示和 VoiceOver 状态仍能表达当前层级。
 
-本项目不使用 shadcn/ui 替换原生控件。shadcn/ui 当前面向 React 和 Tailwind CSS，组件依赖浏览器 DOM、Radix 语义和前端构建链；接入菜单栏应用需要额外嵌入 WebView 与 JavaScript 运行时，会削弱原生键盘、VoiceOver、系统外观和菜单栏行为，同时扩大 helper 同一可执行文件的打包与安全边界。它适合未来独立的 Web 管理界面，当前 macOS 客户端只借鉴其信息层级和间距做法。参考 [Apple HIG Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)、[Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion) 和 [shadcn/ui Tailwind v4 文档](https://ui.shadcn.com/docs/tailwind-v4)。
+项目内的原生 `FanUI` 组件层借鉴 shadcn/ui 的 open-code 模型：组件源码直接属于项目，可以按产品需求修改，不引入 WebView、React、Tailwind 或 Node 构建链。`Sources/FanControl/FanUI/FanUIFoundation.swift` 定义背景、前景、边框、圆角、字号、字重、间距和动态效果等语义令牌，并保存可独立验证的指标呈现逻辑；`FanUIComponents.swift` 提供 Card、Section、Metric Badge、Mode Selector、Update Button、Status Row 和进度状态条。Button、Picker、Slider、Menu 等交互仍由系统控件提供，以保留键盘操作、VoiceOver、强调色和系统外观。
+
+`./script/test_fan_ui.sh` 使用 CLT 分别验证纯 Swift 令牌/呈现契约，以及通过 `NSHostingView` 离屏装载的原生组件树。状态栏 Core Animation 也通过 FanUI 的 Reduce Motion 策略决定是否运行。参考 [Apple HIG Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)、[Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion) 和 [shadcn/ui Tailwind v4 文档](https://ui.shadcn.com/docs/tailwind-v4)。
 
 ## 热负荷模型
 

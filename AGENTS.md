@@ -7,6 +7,7 @@
 Fan Control 是 macOS 14+、Apple Silicon、SwiftPM 管理的菜单栏应用。修改时保持以下约束：
 
 - 项目必须能在仅安装 Command Line Tools 的机器上构建。SwiftUI 本地状态继续使用 `CLTState`，不要重新引入依赖 `SwiftUIMacros.StateMacro` 的 `@State`。
+- 原生界面使用 `Sources/FanControl/FanUI` 中按项目持有源码的设计令牌和组合组件。新增重复的背景、边框、圆角、字号、字重或间距前先扩展语义令牌；Button、Picker、Slider、Menu 等交互继续以系统控件为基础。
 - `FanControl` 同一可执行文件兼任 GUI 和 `--helper` root daemon。helper 会被单独复制到 `/Library/PrivilegedHelperTools`，主程序不得直接链接 Sparkle 或其他只存在于 `.app` 内的动态框架；合并前用 `otool -L` 检查。
 - Sparkle 由 `Sources/SparkleRuntime` 在 GUI 进程中运行时加载，固定版本和 SHA-256 在 `script/package_app.sh`。升级 Sparkle 时同时更新版本、校验值并验证独立 helper。
 - 修改 helper 请求格式、命令语义或需要替换已安装 helper 的实现时，递增 `FanHelperConstants.protocolVersion`；应用只依靠该版本判断是否提示重装。
@@ -16,9 +17,11 @@ Fan Control 是 macOS 14+、Apple Silicon、SwiftPM 管理的菜单栏应用。�
 ## 构建与验证
 ```bash
 swift build
+./script/test_fan_ui.sh
 ./script/test_thermal_model.sh
 ./script/test_status_item_presentation.sh
 ./script/test_app_launch_mode.sh
+./script/test_update_runtime.sh
 ./script/package_app.sh
 ./script/build_and_run.sh --verify
 ```

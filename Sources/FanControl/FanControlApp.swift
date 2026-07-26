@@ -8,6 +8,8 @@ enum FanControlMain {
         switch FanControlLaunchMode.resolve(arguments: CommandLine.arguments) {
         case .helper:
             FanControlHelperDaemon.run()
+        case .updaterCheck:
+            exit(runUpdaterRuntimeCheck())
         case .menuBar:
             let application = NSApplication.shared
             let applicationDelegate = FanControlApplicationDelegate()
@@ -17,6 +19,20 @@ enum FanControlMain {
                 application.run()
             }
         }
+    }
+
+    private static func runUpdaterRuntimeCheck() -> Int32 {
+        let application = NSApplication.shared
+        application.setActivationPolicy(.prohibited)
+        let updateController = UpdateController()
+
+        if updateController.isAvailable {
+            print("Sparkle updater runtime is available")
+            return EXIT_SUCCESS
+        }
+
+        fputs("Sparkle updater runtime is unavailable\n", stderr)
+        return EXIT_FAILURE
     }
 }
 

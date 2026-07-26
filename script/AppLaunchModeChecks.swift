@@ -13,6 +13,22 @@ enum AppLaunchModeChecks {
             ) == .helper,
             "--helper launch did not select helper mode"
         )
+        require(
+            FanControlLaunchMode.resolve(
+                arguments: ["FanControl", "--check-updater-runtime"]
+            ) == .updaterCheck,
+            "updater runtime diagnostic did not select updater-check mode"
+        )
+        require(
+            FanControlLaunchMode.resolve(
+                arguments: [
+                    "FanControl",
+                    "--helper",
+                    "--check-updater-runtime",
+                ]
+            ) == .helper,
+            "helper mode must take precedence over diagnostics"
+        )
         print("App launch mode checks passed")
     }
 
