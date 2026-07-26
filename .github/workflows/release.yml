@@ -12,7 +12,7 @@ jobs:
   release:
     runs-on: macos-15
     env:
-      APPLE_TEAM_ID: JFC5CWT3V6
+      NOTARY_PROFILE: fan-control-notary
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -21,9 +21,10 @@ jobs:
 
       - name: Validate release tag and secrets
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
@@ -34,9 +35,10 @@ jobs:
           fi
 
           for required_name in \
-            MACOS_CERTIFICATE \
+            MACOS_CERTIFICATE_P12_BASE64 \
             MACOS_CERTIFICATE_PASSWORD \
             APPLE_ID \
+            APPLE_TEAM_ID \
             APPLE_APP_SPECIFIC_PASSWORD \
             SPARKLE_PRIVATE_KEY
           do
@@ -48,15 +50,20 @@ jobs:
 
       - name: Import Developer ID certificate
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/fan-control-signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
           CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
 
-          printf '%s' "$MACOS_CERTIFICATE" | base64 -D >"$CERTIFICATE_PATH"
+          if ! printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" |
+            base64 --decode >"$CERTIFICATE_PATH" 2>/dev/null
+          then
+            printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" |
+              base64 -D >"$CERTIFICATE_PATH"
+          fi
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -71,18 +78,33 @@ jobs:
             -s \
             -k "$KEYCHAIN_PASSWORD" \
             "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+          security default-keychain -s "$KEYCHAIN_PATH"
 
           SIGNING_IDENTITY="$(
             security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
-              awk '/Developer ID Application/ { print $2; exit }'
+              awk -F '"' '/Developer ID Application/ { print $2; exit }'
           )"
           if [[ -z "$SIGNING_IDENTITY" ]]; then
             echo "Developer ID Application identity was not found." >&2
             exit 1
           fi
           echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >>"$GITHUB_ENV"
+          echo "NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >>"$GITHUB_ENV"
           rm -f "$CERTIFICATE_PATH"
+
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --keychain "$NOTARY_KEYCHAIN" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
       - name: Build and sign app
         env:
@@ -99,9 +121,6 @@ jobs:
           codesign --verify --deep --strict --verbose=2 dist/FanControl.app
 
       - name: Notarize app
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
           NOTARY_ARCHIVE="$RUNNER_TEMP/FanControl-notarization.zip"
@@ -109,9 +128,8 @@ jobs:
             dist/FanControl.app \
             "$NOTARY_ARCHIVE"
           xcrun notarytool submit "$NOTARY_ARCHIVE" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
+            --keychain-profile "$NOTARY_PROFILE" \
+            --keychain "$NOTARY_KEYCHAIN" \
             --wait
           xcrun stapler staple dist/FanControl.app
           xcrun stapler validate dist/FanControl.app
