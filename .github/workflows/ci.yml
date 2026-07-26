@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Build Swift package
+        run: swift build
+
+      - name: Package Apple Silicon app
+        env:
+          ARCHITECTURES: arm64
+          BUILD_CONFIGURATION: release
+          OUTPUT_DIR: ${{ github.workspace }}/dist
+        run: ./script/package_app.sh
+
+      - name: Verify app bundle
+        run: |
+          set -euo pipefail
+          APP="dist/FanControl.app"
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          test -x "$APP/Contents/MacOS/FanControl"
+          test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          test -f "$APP/Contents/Resources/FanControl-LICENSE.txt"
+          test -f "$APP/Contents/Resources/Sparkle-LICENSE.txt"
+
+          if otool -L "$APP/Contents/MacOS/FanControl" | grep -q "Sparkle.framework"; then
+            echo "The standalone helper executable must not link Sparkle.framework." >&2
+            exit 1
+          fi

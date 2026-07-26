@@ -4,13 +4,13 @@ import Darwin
 
 @main
 struct FanControlApp: App {
-    @State private var appState: AppState
+    @CLTState private var appState: AppState
 
     init() {
         if CommandLine.arguments.contains("--helper") {
             FanControlHelperDaemon.run()
         }
-        _appState = State(initialValue: AppState())
+        _appState = CLTState(initialValue: AppState())
     }
 
     var body: some Scene {
@@ -27,6 +27,7 @@ struct FanControlApp: App {
 final class AppState {
     let sensorManager: SensorManager
     let fanController: FanController
+    let updateController: UpdateController
     let isRunningAsRoot: Bool
     var helperAvailable: Bool = false
     var isInstallingHelper: Bool = false
@@ -39,6 +40,7 @@ final class AppState {
         let sm = SensorManager()
         self.sensorManager = sm
         self.fanController = FanController(sensorManager: sm)
+        self.updateController = UpdateController()
         self.isRunningAsRoot = geteuid() == 0
 
         guard AppInstanceLock.shared.acquire() else {
@@ -73,13 +75,19 @@ final class AppState {
             return
         }
 
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let status = FanControlHelperClient.status()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.helperAvailable = status.ok
-                self.helperMessage = status.ok ? "Privileged helper is ready" : status.message
-                if status.ok {
+                let compatible = status.ok
+                    && status.protocolVersion == FanHelperConstants.protocolVersion
+                self.helperAvailable = compatible
+                if status.ok && !compatible {
+                    self.helperMessage = "Privileged helper update required"
+                } else {
+                    self.helperMessage = compatible ? "Privileged helper is ready" : status.message
+                }
+                if compatible {
                     self.fanController.handleSensorUpdate()
                 }
             }
@@ -91,7 +99,7 @@ final class AppState {
         isInstallingHelper = true
         helperMessage = "Waiting for administrator approval..."
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let response = PrivilegedHelperManager.installCurrentAppHelper()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -174,9 +182,15 @@ final class AppState {
 
             if !self.isRunningAsRoot {
                 let status = FanControlHelperClient.status(timeout: 2.0)
-                self.helperAvailable = status.ok
-                self.helperMessage = status.ok ? "Privileged helper is ready" : status.message
-                guard status.ok else {
+                let compatible = status.ok
+                    && status.protocolVersion == FanHelperConstants.protocolVersion
+                self.helperAvailable = compatible
+                if status.ok && !compatible {
+                    self.helperMessage = "Privileged helper update required"
+                } else {
+                    self.helperMessage = compatible ? "Privileged helper is ready" : status.message
+                }
+                guard compatible else {
                     debugLog("[FanControl] wakeReapply skipped reason=helperUnavailable delay=\(delay) message=\(status.message)")
                     return
                 }

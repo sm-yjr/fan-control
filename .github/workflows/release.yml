@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      APPLE_TEAM_ID: JFC5CWT3V6
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate release tag and secrets
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH." >&2
+            exit 2
+          fi
+
+          for required_name in \
+            MACOS_CERTIFICATE \
+            MACOS_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APPLE_APP_SPECIFIC_PASSWORD \
+            SPARKLE_PRIVATE_KEY
+          do
+            if [[ -z "${!required_name:-}" ]]; then
+              echo "Missing GitHub Actions secret: $required_name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/fan-control-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+
+          printf '%s' "$MACOS_CERTIFICATE" | base64 -D >"$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
+              awk '/Developer ID Application/ { print $2; exit }'
+          )"
+          if [[ -z "$SIGNING_IDENTITY" ]]; then
+            echo "Developer ID Application identity was not found." >&2
+            exit 1
+          fi
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >>"$GITHUB_ENV"
+          rm -f "$CERTIFICATE_PATH"
+
+      - name: Build and sign app
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+          ARCHITECTURES: arm64
+          BUILD_CONFIGURATION: release
+          BUILD_NUMBER: ${{ github.run_number }}
+          OUTPUT_DIR: ${{ github.workspace }}/dist
+        run: |
+          set -euo pipefail
+          APP_VERSION="${APP_VERSION#v}" \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
+            ./script/package_app.sh
+          codesign --verify --deep --strict --verbose=2 dist/FanControl.app
+
+      - name: Notarize app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          NOTARY_ARCHIVE="$RUNNER_TEMP/FanControl-notarization.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/FanControl.app \
+            "$NOTARY_ARCHIVE"
+          xcrun notarytool submit "$NOTARY_ARCHIVE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple dist/FanControl.app
+          xcrun stapler validate dist/FanControl.app
+
+      - name: Create Sparkle appcast
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          APP_VERSION="${APP_VERSION#v}"
+          ARCHIVE_NAME="FanControl-${APP_VERSION}.zip"
+          UPDATE_DIR="$RUNNER_TEMP/updates"
+          mkdir -p "$UPDATE_DIR"
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/FanControl.app \
+            "$UPDATE_DIR/$ARCHIVE_NAME"
+
+          printf '%s' "$SPARKLE_PRIVATE_KEY" |
+            .build/sparkle/2.9.2/bin/generate_appcast \
+              --ed-key-file - \
+              --download-url-prefix \
+                "https://github.com/sm-yjr/fan-control/releases/download/$GITHUB_REF_NAME/" \
+              --full-release-notes-url \
+                "https://github.com/sm-yjr/fan-control/releases/tag/$GITHUB_REF_NAME" \
+              --link "https://github.com/sm-yjr/fan-control" \
+              "$UPDATE_DIR"
+
+          grep -q 'sparkle:edSignature=' "$UPDATE_DIR/appcast.xml"
+          echo "ARCHIVE_PATH=$UPDATE_DIR/$ARCHIVE_NAME" >>"$GITHUB_ENV"
+          echo "APPCAST_PATH=$UPDATE_DIR/appcast.xml" >>"$GITHUB_ENV"
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/fan-control-signing.keychain-db" || true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$ARCHIVE_PATH" \
+            "$APPCAST_PATH" \
+            --generate-notes \
+            --title "Fan Control ${GITHUB_REF_NAME#v}"

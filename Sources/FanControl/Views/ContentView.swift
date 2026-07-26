@@ -6,8 +6,8 @@ struct ContentView: View {
     var sensorManager: SensorManager { appState.sensorManager }
     var fanController: FanController { appState.fanController }
 
-    @State private var selectedFanIndex: Int = 0
-    @State private var showAllSensors = false
+    @CLTState private var selectedFanIndex: Int = 0
+    @CLTState private var showAllSensors = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -412,6 +412,15 @@ struct ContentView: View {
             .font(.caption)
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+
+            if appState.updateController.isAvailable {
+                Button("Check for Updates") {
+                    appState.updateController.checkForUpdates()
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
 
             Spacer()
 

@@ -297,26 +297,42 @@ final class SMCKit {
             return setFanSpeed(id, speed: Int(maxSpeed))
         }
 
-        if !forcedModeFans.contains(id) {
-            var modeVal = SMCValue(fanModeKey(id))
-            guard read(&modeVal) == kIOReturnSuccess else {
-                debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=readMode")
+        // Sleep resets the hardware fan mode to automatic without restarting
+        // the privileged helper. Always verify the SMC register so the
+        // process-local cache cannot suppress the unlock after wake.
+        let cachedAsForced = forcedModeFans.contains(id)
+        var modeVal = SMCValue(fanModeKey(id))
+        guard read(&modeVal) == kIOReturnSuccess else {
+            debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=readMode")
+            return
+        }
+
+        let hardwareIsForced = modeVal.bytes[0] == 1
+        debugLog(
+            "[FanControl] smc.setFanSpeed fan=\(id) modeByte=\(modeVal.bytes[0]) cachedForced=\(cachedAsForced)"
+        )
+
+        if !hardwareIsForced {
+            forcedModeFans.remove(id)
+
+            if cachedAsForced {
+                // The SMC reset independently, normally because the machine
+                // slept. A stale cooldown must not postpone wake recovery.
+                lastUnlockAttemptAt[id] = nil
+                debugLog("[FanControl] smc.setFanSpeed fan=\(id) detectedHardwareModeReset")
+            }
+
+            guard canAttemptUnlock(fanId: id) else {
+                debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=skipped reason=unlockCooldown")
                 return
             }
-            debugLog("[FanControl] smc.setFanSpeed fan=\(id) modeByte=\(modeVal.bytes[0])")
-            if modeVal.bytes[0] != 1 {
-                guard canAttemptUnlock(fanId: id) else {
-                    debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=skipped reason=unlockCooldown")
-                    return
-                }
-                lastUnlockAttemptAt[id] = Date()
-                guard unlockFanControl(fanId: id) else {
-                    debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=unlock")
-                    return
-                }
+            lastUnlockAttemptAt[id] = Date()
+            guard unlockFanControl(fanId: id) else {
+                debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=unlock")
+                return
             }
-            forcedModeFans.insert(id)
         }
+        forcedModeFans.insert(id)
 
         var value = SMCValue("F\(id)Tg")
         guard read(&value) == kIOReturnSuccess else {

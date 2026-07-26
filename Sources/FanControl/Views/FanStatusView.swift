@@ -6,7 +6,7 @@ struct FanStatusView: View {
     let onModeChange: (FanControlMode) -> Void
     let onEditCurve: () -> Void
 
-    @State private var manualRPM: Double = 1500
+    @CLTState private var manualRPM: Double = 1500
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
