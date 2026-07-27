@@ -148,6 +148,13 @@ jobs:
             "$DMG_PATH" \
             "Fan Control $APP_VERSION"
 
+          codesign \
+            --force \
+            --timestamp \
+            --sign "$SIGNING_IDENTITY" \
+            "$DMG_PATH"
+          codesign --verify --verbose=2 "$DMG_PATH"
+
           xcrun notarytool submit "$DMG_PATH" \
             --keychain-profile "$NOTARY_PROFILE" \
             --keychain "$NOTARY_KEYCHAIN" \
