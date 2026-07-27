@@ -62,7 +62,13 @@ enum FanControlHelperClient {
             connect(fd, addr, len)
         }
         guard connected == 0 else {
-            return FanHelperResponse(ok: false, message: "helper unavailable", isRoot: false)
+            let connectError = errno
+            let description = String(cString: strerror(connectError))
+            return FanHelperResponse(
+                ok: false,
+                message: "helper unavailable (\(connectError): \(description))",
+                isRoot: false
+            )
         }
 
         do {

@@ -1,6 +1,9 @@
 import Foundation
 
 enum PrivilegedHelperManager {
+    private static let helperStartupTimeout: TimeInterval = 10
+    private static let helperStatusPollInterval: TimeInterval = 0.2
+
     static func makeLaunchDaemonPlist() -> String {
         """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -28,8 +31,19 @@ enum PrivilegedHelperManager {
     }
 
     static func installCurrentAppHelper() -> FanHelperResponse {
-        guard let executablePath = Bundle.main.executablePath else {
-            return FanHelperResponse(ok: false, message: "missing executable path", isRoot: false)
+        let bundledHelperURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("LaunchServices", isDirectory: true)
+            .appendingPathComponent(FanHelperConstants.label, isDirectory: false)
+        let bundledHelperPath = bundledHelperURL.path
+
+        guard FileManager.default.isExecutableFile(atPath: bundledHelperPath) else {
+            return FanHelperResponse(
+                ok: false,
+                message: "bundled privileged helper is missing",
+                isRoot: false
+            )
         }
 
         let plist = makeLaunchDaemonPlist()
@@ -41,17 +55,23 @@ enum PrivilegedHelperManager {
             return FanHelperResponse(ok: false, message: error.localizedDescription, isRoot: false)
         }
 
+        let stagedHelperPath = "\(FanHelperConstants.helperToolPath).installing"
         let script = ([
             "set -e",
             "/usr/bin/install -d -m 755 -o root -g wheel /Library/PrivilegedHelperTools",
-            "/usr/bin/install -m 755 -o root -g wheel \(shellQuote(executablePath)) \(shellQuote(FanHelperConstants.helperToolPath))",
+            "/bin/rm -f \(shellQuote(stagedHelperPath))",
+            "/usr/bin/install -m 755 -o root -g wheel \(shellQuote(bundledHelperPath)) \(shellQuote(stagedHelperPath))",
+            "/usr/bin/codesign --verify --strict \(shellQuote(stagedHelperPath))",
+            "/usr/bin/xattr -d com.apple.quarantine \(shellQuote(stagedHelperPath)) >/dev/null 2>&1 || true",
             "/usr/bin/install -m 644 -o root -g wheel \(shellQuote(plistURL.path)) \(shellQuote(FanHelperConstants.launchDaemonPath))",
             "/bin/launchctl bootout system \(shellQuote(FanHelperConstants.launchDaemonPath)) >/dev/null 2>&1 || true",
+            "/bin/mv -f \(shellQuote(stagedHelperPath)) \(shellQuote(FanHelperConstants.helperToolPath))",
+            "/bin/rm -f \(shellQuote(FanHelperConstants.socketPath))",
             "/bin/launchctl bootstrap system \(shellQuote(FanHelperConstants.launchDaemonPath))",
             "/bin/launchctl enable system/\(FanHelperConstants.label)"
         ]).joined(separator: "; ")
 
-        debugLog("[FanControl] installHelper start executable=\(executablePath)")
+        debugLog("[FanControl] installHelper start executable=\(bundledHelperPath)")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = [
@@ -77,13 +97,12 @@ enum PrivilegedHelperManager {
             return FanHelperResponse(ok: false, message: error.localizedDescription, isRoot: false)
         }
 
-        Thread.sleep(forTimeInterval: 0.3)
-        let status = FanControlHelperClient.status(timeout: 2.0)
+        let status = waitForCompatibleHelper()
         debugLog("[FanControl] installHelper status ok=\(status.ok) message=\(status.message)")
         guard status.ok else {
             return FanHelperResponse(
                 ok: false,
-                message: "installed but helper did not respond: \(status.message)",
+                message: "installed but helper did not become ready: \(status.message)",
                 isRoot: false
             )
         }
@@ -95,6 +114,32 @@ enum PrivilegedHelperManager {
             )
         }
         return status
+    }
+
+    private static func waitForCompatibleHelper() -> FanHelperResponse {
+        let deadline = ProcessInfo.processInfo.systemUptime + helperStartupTimeout
+        var lastStatus = FanHelperResponse(
+            ok: false,
+            message: "helper unavailable",
+            isRoot: false
+        )
+
+        repeat {
+            let status = FanControlHelperClient.status(timeout: 1.0)
+            lastStatus = status
+            if status.ok,
+               status.protocolVersion == FanHelperConstants.protocolVersion {
+                return status
+            }
+
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            if remaining <= 0 {
+                break
+            }
+            Thread.sleep(forTimeInterval: min(helperStatusPollInterval, remaining))
+        } while true
+
+        return lastStatus
     }
 
     private static func shellQuote(_ value: String) -> String {

@@ -28,8 +28,10 @@ APP_BUNDLE="$OUTPUT_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_FRAMEWORKS="$APP_CONTENTS/Frameworks"
+APP_LAUNCH_SERVICES="$APP_CONTENTS/Library/LaunchServices"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
+HELPER_BINARY="$APP_LAUNCH_SERVICES/com.local.fan-control.helper"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
 if [[ ! "$BUILD_CONFIGURATION" =~ ^(debug|release)$ ]]; then
@@ -92,12 +94,13 @@ if [[ ! -x "$BUILD_BINARY" ]]; then
 fi
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES"
+mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_LAUNCH_SERVICES" "$APP_RESOURCES"
 ditto "$BUILD_BINARY" "$APP_BINARY"
+ditto "$BUILD_BINARY" "$HELPER_BINARY"
 ditto "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 ditto "$ROOT_DIR/LICENSE" "$APP_RESOURCES/FanControl-LICENSE.txt"
 ditto "$SPARKLE_CACHE_DIR/LICENSE" "$APP_RESOURCES/Sparkle-LICENSE.txt"
-chmod +x "$APP_BINARY"
+chmod +x "$APP_BINARY" "$HELPER_BINARY"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

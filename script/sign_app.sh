@@ -5,6 +5,7 @@ APP="${1:?usage: sign_app.sh <app> <identity> [timestamp]}"
 IDENTITY="${2:?usage: sign_app.sh <app> <identity> [timestamp]}"
 USE_TIMESTAMP="${3:-0}"
 SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+HELPER="$APP/Contents/Library/LaunchServices/com.local.fan-control.helper"
 
 if [[ ! -d "$APP" ]]; then
   echo "error: app bundle not found at $APP" >&2
@@ -13,6 +14,11 @@ fi
 
 if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
   echo "error: Sparkle framework not found at $SPARKLE_FRAMEWORK" >&2
+  exit 1
+fi
+
+if [[ ! -x "$HELPER" ]]; then
+  echo "error: privileged helper not found at $HELPER" >&2
   exit 1
 fi
 
@@ -41,6 +47,8 @@ sign_target "$SPARKLE_FRAMEWORK/Versions/Current/XPCServices/Downloader.xpc" \
 sign_target "$SPARKLE_FRAMEWORK/Versions/Current/Autoupdate"
 sign_target "$SPARKLE_FRAMEWORK/Versions/Current/Updater.app"
 sign_target "$SPARKLE_FRAMEWORK"
+sign_target "$HELPER" --identifier "com.local.fan-control.helper"
 sign_target "$APP"
 
+codesign --verify --strict --verbose=2 "$HELPER"
 codesign --verify --deep --strict --verbose=2 "$APP"

@@ -49,9 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           APP="dist/FanControl.app"
+          HELPER="$APP/Contents/Library/LaunchServices/com.local.fan-control.helper"
           plutil -lint "$APP/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --verify --strict --verbose=2 "$HELPER"
           test -x "$APP/Contents/MacOS/FanControl"
+          test -x "$HELPER"
           test -d "$APP/Contents/Frameworks/Sparkle.framework"
           test -f "$APP/Contents/Resources/FanControl-LICENSE.txt"
           test -f "$APP/Contents/Resources/Sparkle-LICENSE.txt"
@@ -59,8 +62,8 @@ jobs:
           test -x script/package_dmg.sh
           bash -n script/package_dmg.sh
 
-          if otool -L "$APP/Contents/MacOS/FanControl" | grep -q "Sparkle.framework"; then
-            echo "The standalone helper executable must not link Sparkle.framework." >&2
+          if otool -L "$HELPER" | grep -q "Sparkle.framework"; then
+            echo "The privileged helper executable must not link Sparkle.framework." >&2
             exit 1
           fi
 

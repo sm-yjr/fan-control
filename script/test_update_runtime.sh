@@ -17,6 +17,12 @@ then
 fi
 
 APP="$OUTPUT_DIR/FanControl.app"
+HELPER="$APP/Contents/Library/LaunchServices/com.local.fan-control.helper"
+STAGED_HELPER="$OUTPUT_DIR/com.local.fan-control.helper"
+
+/usr/bin/install -m 755 "$HELPER" "$STAGED_HELPER"
+codesign --verify --strict "$STAGED_HELPER"
+
 set +e
 RUNTIME_OUTPUT="$(
   "$APP/Contents/MacOS/FanControl" \

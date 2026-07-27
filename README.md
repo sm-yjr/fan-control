@@ -21,7 +21,7 @@ swift --version
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/sm-yjr/fan-control/releases) 下载最新的 `FanControl-版本号.dmg`，打开磁盘映像并把 `FanControl.app` 拖到 `Applications`。首次修改风扇设置时，应用会请求管理员授权，把同一个可执行文件安装为 launch daemon：
+从 [GitHub Releases](https://github.com/sm-yjr/fan-control/releases) 下载最新的 `FanControl-版本号.dmg`，打开磁盘映像并把 `FanControl.app` 拖到 `Applications`。首次修改风扇设置时，应用会请求管理员授权，把 App 内独立签名的 Helper 安装为 launch daemon：
 
 ```text
 /Library/PrivilegedHelperTools/com.local.fan-control.helper
@@ -63,7 +63,7 @@ ARCHITECTURES=arm64 \
 ./script/package_app.sh
 ```
 
-构建脚本会从 Sparkle 官方 GitHub Release 下载 2.9.2，校验 SHA-256 后再复制框架。`.app` 内的可执行文件通过运行时桥接加载 Sparkle，因此被单独复制到 privileged helper 目录后仍能启动。
+构建脚本会从 Sparkle 官方 GitHub Release 下载 2.9.2，校验 SHA-256 后再复制框架。打包时会在 `Contents/Library/LaunchServices` 中生成独立签名的 Helper；该文件脱离 App bundle 后仍能通过代码签名验证，并且不会链接 Sparkle.framework。
 
 `test_update_runtime.sh` 会生成本地 ad-hoc 签名的测试应用，并通过隐藏的 `--check-updater-runtime` 诊断模式确认 Sparkle 能实际加载。该模式不会启动传感器、helper 或风扇控制。正式 Developer ID 构建保留 Hardened Runtime；没有 Team ID 的本地 ad-hoc 构建关闭 Hardened Runtime，避免 Library Validation 拒绝同样采用 ad-hoc 签名的 Sparkle。
 
