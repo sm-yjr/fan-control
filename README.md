@@ -21,7 +21,7 @@ swift --version
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/sm-yjr/fan-control/releases) 下载最新的 `FanControl-版本号.zip`，解压后把 `FanControl.app` 移到 `/Applications`。首次修改风扇设置时，应用会请求管理员授权，把同一个可执行文件安装为 launch daemon：
+从 [GitHub Releases](https://github.com/sm-yjr/fan-control/releases) 下载最新的 `FanControl-版本号.dmg`，打开磁盘映像并把 `FanControl.app` 拖到 `Applications`。首次修改风扇设置时，应用会请求管理员授权，把同一个可执行文件安装为 launch daemon：
 
 ```text
 /Library/PrivilegedHelperTools/com.local.fan-control.helper
@@ -66,6 +66,17 @@ ARCHITECTURES=arm64 \
 构建脚本会从 Sparkle 官方 GitHub Release 下载 2.9.2，校验 SHA-256 后再复制框架。`.app` 内的可执行文件通过运行时桥接加载 Sparkle，因此被单独复制到 privileged helper 目录后仍能启动。
 
 `test_update_runtime.sh` 会生成本地 ad-hoc 签名的测试应用，并通过隐藏的 `--check-updater-runtime` 诊断模式确认 Sparkle 能实际加载。该模式不会启动传感器、helper 或风扇控制。正式 Developer ID 构建保留 Hardened Runtime；没有 Team ID 的本地 ad-hoc 构建关闭 Hardened Runtime，避免 Library Validation 拒绝同样采用 ad-hoc 签名的 Sparkle。
+
+本地需要检查 DMG 布局时，可以在应用打包完成后运行：
+
+```bash
+./script/package_dmg.sh \
+  dist/FanControl.app \
+  dist/FanControl-1.2.0.dmg \
+  "Fan Control 1.2.0"
+```
+
+脚本会清除暂存副本中可能由开发机引入的 `com.apple.quarantine` 扩展属性，再创建只读压缩 DMG。网络下载仍会让 macOS 给 DMG 添加 quarantine，因此正式发布流程会分别公证并装订 App 和最终 DMG，再通过 Gatekeeper 验证。这样可以保留系统安全检查，并防止 quarantine 导致已签名 Helper 的安装链路异常。
 
 ## 界面与状态栏反馈
 
@@ -134,7 +145,7 @@ ARCHITECTURES=arm64 \
 https://github.com/sm-yjr/fan-control/releases/latest/download/appcast.xml
 ```
 
-推送 `vMAJOR.MINOR.PATCH` 标签会触发发布工作流。工作流编译 Apple Silicon 版本，使用 Developer ID 签名并公证，生成 Ed25519 签名的 Sparkle appcast，然后把 zip 和 `appcast.xml` 上传到同一个 GitHub Release。
+推送 `vMAJOR.MINOR.PATCH` 标签会触发发布工作流。工作流编译 Apple Silicon 版本，使用 Developer ID 签名 App，依次公证并装订 App 和 DMG，验证 Gatekeeper 接受最终磁盘映像，然后为该 DMG 生成 Ed25519 签名的 Sparkle appcast。GitHub Release 上传 `FanControl-版本号.dmg` 和 `appcast.xml`。
 
 发布工作流需要以下 GitHub Actions Secrets：
 

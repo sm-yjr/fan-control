@@ -134,6 +134,35 @@ jobs:
           xcrun stapler staple dist/FanControl.app
           xcrun stapler validate dist/FanControl.app
 
+      - name: Create and notarize DMG
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          APP_VERSION="${APP_VERSION#v}"
+          DMG_NAME="FanControl-${APP_VERSION}.dmg"
+          DMG_PATH="$RUNNER_TEMP/$DMG_NAME"
+
+          ./script/package_dmg.sh \
+            dist/FanControl.app \
+            "$DMG_PATH" \
+            "Fan Control $APP_VERSION"
+
+          xcrun notarytool submit "$DMG_PATH" \
+            --keychain-profile "$NOTARY_PROFILE" \
+            --keychain "$NOTARY_KEYCHAIN" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+          spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "$DMG_PATH"
+
+          echo "DMG_PATH=$DMG_PATH" >>"$GITHUB_ENV"
+
       - name: Create Sparkle appcast
         env:
           APP_VERSION: ${{ github.ref_name }}
@@ -141,13 +170,10 @@ jobs:
         run: |
           set -euo pipefail
           APP_VERSION="${APP_VERSION#v}"
-          ARCHIVE_NAME="FanControl-${APP_VERSION}.zip"
           UPDATE_DIR="$RUNNER_TEMP/updates"
           mkdir -p "$UPDATE_DIR"
 
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/FanControl.app \
-            "$UPDATE_DIR/$ARCHIVE_NAME"
+          ditto "$DMG_PATH" "$UPDATE_DIR/$(basename "$DMG_PATH")"
 
           printf '%s' "$SPARKLE_PRIVATE_KEY" |
             .build/sparkle/2.9.2/bin/generate_appcast \
@@ -160,7 +186,7 @@ jobs:
               "$UPDATE_DIR"
 
           grep -q 'sparkle:edSignature=' "$UPDATE_DIR/appcast.xml"
-          echo "ARCHIVE_PATH=$UPDATE_DIR/$ARCHIVE_NAME" >>"$GITHUB_ENV"
+          grep -q "FanControl-${APP_VERSION}.dmg" "$UPDATE_DIR/appcast.xml"
           echo "APPCAST_PATH=$UPDATE_DIR/appcast.xml" >>"$GITHUB_ENV"
 
       - name: Remove temporary signing keychain
@@ -172,7 +198,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            "$ARCHIVE_PATH" \
+            "$DMG_PATH" \
             "$APPCAST_PATH" \
             --generate-notes \
             --title "Fan Control ${GITHUB_REF_NAME#v}"
