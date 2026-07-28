@@ -11,6 +11,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate, @unchecked Sendab
     private let iconView = StatusFanImageView(frame: .zero)
     private let popover = NSPopover()
     private var reduceMotionObserver: NSObjectProtocol?
+    private var appliedPresentation: FanStatusPresentation?
 
     init(appState: AppState) {
         self.appState = appState
@@ -118,15 +119,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate, @unchecked Sendab
                 )
             }
         )
-        if let button = statusItem.button {
-            button.toolTip = "Fan Control — \(presentation.accessibilityValue)"
-            button.setAccessibilityValue(presentation.accessibilityValue)
+        if appliedPresentation != presentation {
+            let accessibilityValue = presentation.accessibilityValue
+            if let button = statusItem.button {
+                button.toolTip = "Fan Control — \(accessibilityValue)"
+                button.setAccessibilityValue(accessibilityValue)
+            }
+            appliedPresentation = presentation
         }
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         iconView.configure(
             presentation: presentation,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            allowsAnimation: popover.isShown
         )
     }
 
@@ -142,12 +148,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate, @unchecked Sendab
                 of: button,
                 preferredEdge: .minY
             )
+            appState.setPopoverPresented(true)
+            updatePresentation()
             iconView.setHighlighted(true)
             button.highlight(true)
         }
     }
 
     func popoverDidClose(_ notification: Notification) {
+        appState.setPopoverPresented(false)
+        updatePresentation()
         iconView.setHighlighted(false)
         statusItem.button?.highlight(false)
     }
@@ -190,7 +200,8 @@ private final class StatusFanImageView: NSImageView {
 
     func configure(
         presentation: FanStatusPresentation,
-        reduceMotion: Bool
+        reduceMotion: Bool,
+        allowsAnimation: Bool
     ) {
         if appliedLevel != presentation.level || image == nil {
             let weight: NSFont.Weight = presentation.level == .high
@@ -212,7 +223,8 @@ private final class StatusFanImageView: NSImageView {
 
         guard let rotationPeriod = FanUIMotion.resolvedDuration(
             presentation.rotationPeriod,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            allowsAnimation: allowsAnimation
         ), rotationPeriod > 0 else {
             stopRotation()
             return

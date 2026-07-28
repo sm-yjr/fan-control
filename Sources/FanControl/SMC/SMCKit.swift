@@ -128,8 +128,14 @@ extension Float {
 // MARK: - SMC Client
 
 final class SMCKit {
+    private struct CachedKeyInfo {
+        let dataSize: UInt32
+        let dataType: String
+    }
+
     static let shared = SMCKit()
     private var conn: io_connect_t = 0
+    private var keyInfoCache: [String: CachedKeyInfo] = [:]
     private var fanModeKeyIsLower: Bool?
     private var forcedModeFans: Set<Int> = []
     private var lastUnlockAttemptAt: [Int: Date] = [:]
@@ -452,18 +458,40 @@ final class SMCKit {
         var output = SMCKeyData()
 
         input.key = FourCharCode(fromString: value.pointee.key)
-        input.data8 = SMCSelector.readKeyInfo.rawValue
+        if let cached = keyInfoCache[value.pointee.key] {
+            value.pointee.dataSize = cached.dataSize
+            value.pointee.dataType = cached.dataType
+            input.keyInfo.dataSize = IOByteCount32(cached.dataSize)
+        } else {
+            input.data8 = SMCSelector.readKeyInfo.rawValue
+            let infoResult = call(
+                SMCSelector.kernelIndex.rawValue,
+                input: &input,
+                output: &output
+            )
+            guard infoResult == kIOReturnSuccess else { return infoResult }
 
-        var result = call(SMCSelector.kernelIndex.rawValue, input: &input, output: &output)
-        guard result == kIOReturnSuccess else { return result }
-
-        value.pointee.dataSize = UInt32(output.keyInfo.dataSize)
-        value.pointee.dataType = output.keyInfo.dataType.toString()
-        input.keyInfo.dataSize = output.keyInfo.dataSize
+            let dataSize = UInt32(output.keyInfo.dataSize)
+            let dataType = output.keyInfo.dataType.toString()
+            value.pointee.dataSize = dataSize
+            value.pointee.dataType = dataType
+            input.keyInfo.dataSize = output.keyInfo.dataSize
+            keyInfoCache[value.pointee.key] = CachedKeyInfo(
+                dataSize: dataSize,
+                dataType: dataType
+            )
+        }
         input.data8 = SMCSelector.readBytes.rawValue
 
-        result = call(SMCSelector.kernelIndex.rawValue, input: &input, output: &output)
-        guard result == kIOReturnSuccess else { return result }
+        let result = call(
+            SMCSelector.kernelIndex.rawValue,
+            input: &input,
+            output: &output
+        )
+        guard result == kIOReturnSuccess else {
+            keyInfoCache[value.pointee.key] = nil
+            return result
+        }
 
         memcpy(&value.pointee.bytes, &output.bytes, min(Int(value.pointee.dataSize), value.pointee.bytes.count))
         return kIOReturnSuccess

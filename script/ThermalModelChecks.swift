@@ -10,6 +10,7 @@ enum ThermalModelChecks {
         checkBalancedCurve()
         checkLegacyMigration()
         checkControlSourceScaleChange()
+        checkPollingCadence()
         print("Thermal model checks passed")
     }
 
@@ -160,6 +161,54 @@ enum ThermalModelChecks {
         require(curve.sensorKey == "Average CPU", "temperature source was not selected")
         require(curve.points.first?.temperature == 35, "load-scale points leaked into temperature scale")
         require(approximatelyEqual(curve.hysteresis, 4), "temperature hysteresis was not restored")
+    }
+
+    private static func checkPollingCadence() {
+        require(
+            SensorPollingPolicy.interval(
+                isPopoverPresented: false,
+                thermalPressure: .nominal,
+                hottestSiliconTemperature: 55,
+                activity: .automatic
+            ) == 8,
+            "automatic background polling did not enter the low-wakeup cadence"
+        )
+        require(
+            SensorPollingPolicy.interval(
+                isPopoverPresented: false,
+                thermalPressure: .nominal,
+                hottestSiliconTemperature: 55,
+                activity: .manual
+            ) == 5,
+            "manual mode polling became too slow for reconciliation"
+        )
+        require(
+            SensorPollingPolicy.interval(
+                isPopoverPresented: false,
+                thermalPressure: .nominal,
+                hottestSiliconTemperature: 55,
+                activity: .curve
+            ) == 2,
+            "curve mode lost its responsive polling cadence"
+        )
+        require(
+            SensorPollingPolicy.interval(
+                isPopoverPresented: false,
+                thermalPressure: .serious,
+                hottestSiliconTemperature: 55,
+                activity: .automatic
+            ) == 2,
+            "serious thermal pressure did not restore responsive polling"
+        )
+        require(
+            SensorPollingPolicy.interval(
+                isPopoverPresented: true,
+                thermalPressure: .nominal,
+                hottestSiliconTemperature: 55,
+                activity: .automatic
+            ) == 2,
+            "visible UI did not restore responsive polling"
+        )
     }
 
     private static func approximatelyEqual(_ lhs: Double, _ rhs: Double) -> Bool {

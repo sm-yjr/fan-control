@@ -58,6 +58,7 @@ final class AppState {
     var isInstallingHelper: Bool = false
     var helperMessage: String?
     var canWriteFans: Bool { isRunningAsRoot || helperAvailable }
+    private var isPopoverPresented = false
     private var powerNotificationObservers: [NSObjectProtocol] = []
     private var powerEventObserver: PowerEventObserver?
 
@@ -86,7 +87,9 @@ final class AppState {
         }
 
         fanController.start()
-        sm.startPolling()
+        sm.startPolling { [weak self] in
+            self?.preferredPollingInterval ?? 2
+        }
         refreshHelperStatus()
 
         setupPowerNotifications()
@@ -136,6 +139,21 @@ final class AppState {
                 }
             }
         }
+    }
+
+    func setPopoverPresented(_ isPresented: Bool) {
+        guard isPopoverPresented != isPresented else { return }
+        isPopoverPresented = isPresented
+        sensorManager.reschedulePolling()
+    }
+
+    private var preferredPollingInterval: TimeInterval {
+        SensorPollingPolicy.interval(
+            isPopoverPresented: isPopoverPresented,
+            thermalPressure: sensorManager.systemThermalPressure,
+            hottestSiliconTemperature: sensorManager.hottestSiliconTemperature,
+            activity: fanController.pollingActivity
+        )
     }
 
     private func setupPowerNotifications() {

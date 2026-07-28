@@ -8,6 +8,7 @@ trap 'rm -f "$OUTPUT"' EXIT
 swiftc \
   "$ROOT_DIR/Sources/FanControl/Controller/ThermalDemandEstimator.swift" \
   "$ROOT_DIR/Sources/FanControl/Controller/FanCurve.swift" \
+  "$ROOT_DIR/Sources/FanControl/Controller/SensorPollingPolicy.swift" \
   "$ROOT_DIR/script/ThermalModelChecks.swift" \
   -o "$OUTPUT"
 

@@ -122,6 +122,9 @@ final class SensorManager {
 
     private let smc = SMCKit.shared
     private var timer: Timer?
+    private var pollingActive = false
+    private var defaultPollingInterval: TimeInterval = 2
+    private var pollingIntervalProvider: (() -> TimeInterval)?
     private var isRefreshInFlight = false
     private var didDiscoverSensors = false
     private var thermalDemandEstimator = ThermalDemandEstimator()
@@ -141,17 +144,44 @@ final class SensorManager {
         max(hottestCPU, hottestGPU)
     }
 
-    func startPolling(interval: TimeInterval = 2.0) {
+    func startPolling(
+        interval: TimeInterval = 2.0,
+        intervalProvider: (() -> TimeInterval)? = nil
+    ) {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.updateReadings()
-        }
+        timer = nil
+        pollingActive = true
+        defaultPollingInterval = max(0.5, interval)
+        pollingIntervalProvider = intervalProvider
         updateReadings()
     }
 
     func stopPolling() {
+        pollingActive = false
         timer?.invalidate()
         timer = nil
+    }
+
+    func reschedulePolling() {
+        guard pollingActive else { return }
+        scheduleNextPoll()
+    }
+
+    private func scheduleNextPoll() {
+        guard pollingActive else { return }
+        timer?.invalidate()
+
+        let interval = max(
+            0.5,
+            pollingIntervalProvider?() ?? defaultPollingInterval
+        )
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.timer = nil
+            self.updateReadings()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     private func discoverSensors() {
@@ -166,6 +196,7 @@ final class SensorManager {
                 self.didDiscoverSensors = true
                 self.isRefreshInFlight = false
                 self.onSnapshotUpdated?()
+                self.scheduleNextPoll()
             }
         }
     }
@@ -192,6 +223,7 @@ final class SensorManager {
                 self.apply(snapshot)
                 self.isRefreshInFlight = false
                 self.onSnapshotUpdated?()
+                self.scheduleNextPoll()
             }
         }
     }

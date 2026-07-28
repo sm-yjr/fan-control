@@ -51,7 +51,15 @@ final class FanController {
     private var lastModeReconcileAt: [Int: Date] = [:]
     private var rpmMismatchStartedAt: [Int: Date] = [:]
     private var lastRPMReconcileAt: [Int: Date] = [:]
+    private var manualWriteTimers: [Int: Timer] = [:]
+    private var configSaveTimer: Timer?
     private var needsConfigMigrationWrite = false
+    private let configPersistenceQueue = DispatchQueue(
+        label: "FanControl.ConfigPersistence",
+        qos: .utility
+    )
+    private let manualWriteDelay: TimeInterval = 0.25
+    private let configSaveDelay: TimeInterval = 0.35
     private let minRPMDelta = 75
     private let minWriteInterval: TimeInterval = 5
     private let minModeReconcileInterval: TimeInterval = 30
@@ -68,6 +76,22 @@ final class FanController {
         loadConfig()
     }
 
+    var pollingActivity: FanPollingActivity {
+        if fanStates.contains(where: {
+            if case .curve = $0.mode { return true }
+            return false
+        }) {
+            return .curve
+        }
+        if fanStates.contains(where: {
+            if case .manual = $0.mode { return true }
+            return false
+        }) {
+            return .manual
+        }
+        return .automatic
+    }
+
     func start() {
         isActive = true
         syncFans(sensorManager.fans)
@@ -75,8 +99,10 @@ final class FanController {
     }
 
     func stop(completion: (() -> Void)? = nil) {
+        flushPendingConfigSave()
         isActive = false
         let states = fanStates
+        cancelAllManualWrites()
         fanWriteInFlight.removeAll()
         pendingTargetRPM.removeAll()
         fanOffEnteredAt.removeAll()
@@ -116,20 +142,27 @@ final class FanController {
 
         switch mode {
         case .automatic:
+            cancelManualWrite(forFan: fanId)
             setAutomatic(fanId: fanId)
         case .manual(let rpm):
-            scheduleFanSpeedWrite(fanId: fanId, rpm: rpm, force: true)
+            if case .manual = oldMode {
+                scheduleManualSpeedWrite(fanId: fanId, rpm: rpm)
+            } else {
+                cancelManualWrite(forFan: fanId)
+                scheduleFanSpeedWrite(fanId: fanId, rpm: rpm, force: true)
+            }
         case .curve:
+            cancelManualWrite(forFan: fanId)
             break
         }
 
-        if case .curve = oldMode {} else if case .curve = mode {} else {}
         saveConfig()
     }
 
     func setCurveConfig(_ config: FanCurveConfig, forFan fanId: Int) {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
         let sourceChanged = fanStates[idx].curveConfig?.sensorKey != config.sensorKey
+        cancelManualWrite(forFan: fanId)
         fanStates[idx].curveConfig = config
         fanStates[idx].mode = .curve(configId: config.id)
         if sourceChanged {
@@ -142,6 +175,7 @@ final class FanController {
 
     func resetCurve(forFan fanId: Int) {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
+        cancelManualWrite(forFan: fanId)
         let sensorKey = fanStates[idx].curveConfig?.sensorKey ?? defaultSensorKey
         let config = FanCurveConfig.defaultCurve(sensorKey: sensorKey)
         fanStates[idx].curveConfig = config
@@ -161,6 +195,7 @@ final class FanController {
 
     func prepareForSleep() {
         debugLog("[FanControl] prepareForSleep")
+        cancelAllManualWrites()
         fanWriteInFlight.removeAll()
         pendingTargetRPM.removeAll()
     }
@@ -168,6 +203,7 @@ final class FanController {
     func reapplyConfiguredModes(reason: String) {
         guard isActive else { return }
         debugLog("[FanControl] reapplyConfiguredModes reason=\(reason) fans=\(fanStates.count)")
+        cancelAllManualWrites()
         fanWriteInFlight.removeAll()
         pendingTargetRPM.removeAll()
         lastTargetRPM.removeAll()
@@ -407,6 +443,33 @@ final class FanController {
         }
     }
 
+    private func scheduleManualSpeedWrite(fanId: Int, rpm: Int) {
+        cancelManualWrite(forFan: fanId)
+        let timer = Timer(timeInterval: manualWriteDelay, repeats: false) { [weak self] _ in
+            guard let self,
+                  let state = self.fanStates.first(where: { $0.fanId == fanId }),
+                  case .manual(let currentRPM) = state.mode,
+                  currentRPM == rpm else {
+                return
+            }
+            self.manualWriteTimers[fanId] = nil
+            self.scheduleFanSpeedWrite(fanId: fanId, rpm: rpm, force: true)
+        }
+        manualWriteTimers[fanId] = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelManualWrite(forFan fanId: Int) {
+        manualWriteTimers.removeValue(forKey: fanId)?.invalidate()
+    }
+
+    private func cancelAllManualWrites() {
+        for timer in manualWriteTimers.values {
+            timer.invalidate()
+        }
+        manualWriteTimers.removeAll()
+    }
+
     private func shouldWrite(fanId: Int, rpm: Int) -> Bool {
         guard let previous = lastTargetRPM[fanId] else { return true }
         if previous == rpm { return false }
@@ -580,10 +643,35 @@ final class FanController {
     }
 
     func saveConfig() {
+        configSaveTimer?.invalidate()
+        let timer = Timer(timeInterval: configSaveDelay, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.configSaveTimer = nil
+            let states = self.fanStates
+            let destination = self.configURL
+            self.configPersistenceQueue.async {
+                Self.writeConfig(states, to: destination)
+            }
+        }
+        configSaveTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func flushPendingConfigSave() {
+        configSaveTimer?.invalidate()
+        configSaveTimer = nil
+        let states = fanStates
+        let destination = configURL
+        configPersistenceQueue.sync {
+            Self.writeConfig(states, to: destination)
+        }
+    }
+
+    private static func writeConfig(_ states: [FanState], to destination: URL) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(fanStates) {
-            try? data.write(to: configURL)
+        if let data = try? encoder.encode(states) {
+            try? data.write(to: destination, options: .atomic)
         }
     }
 

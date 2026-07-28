@@ -3,7 +3,7 @@ import Darwin
 
 enum FanHelperConstants {
     static let label = "com.local.fan-control.helper"
-    static let protocolVersion = 2
+    static let protocolVersion = 3
     static let socketPath = "/var/run/com.local.fan-control.helper.sock"
     static let helperToolPath = "/Library/PrivilegedHelperTools/\(label)"
     static let launchDaemonPath = "/Library/LaunchDaemons/\(label).plist"
@@ -214,7 +214,9 @@ enum FanControlHelperDaemon {
         while true {
             let clientFD = accept(serverFD, nil, nil)
             guard clientFD >= 0 else { continue }
-            handle(clientFD: clientFD)
+            autoreleasepool {
+                handle(clientFD: clientFD)
+            }
             close(clientFD)
         }
     }

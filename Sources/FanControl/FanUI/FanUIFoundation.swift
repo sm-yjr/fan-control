@@ -220,21 +220,26 @@ struct FanProgressPresentation: Equatable {
     }
 
     private static func formattedInteger(_ value: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = true
-        formatter.groupingSize = 3
-        formatter.maximumFractionDigits = 0
-        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+        let digits = String(abs(value))
+        var reversed = ""
+        for (offset, character) in digits.reversed().enumerated() {
+            if offset > 0 && offset.isMultiple(of: 3) {
+                reversed.append(",")
+            }
+            reversed.append(character)
+        }
+        let grouped = String(reversed.reversed())
+        return value < 0 ? "-\(grouped)" : grouped
     }
 }
 
 enum FanUIMotion {
     static func resolvedDuration(
         _ duration: TimeInterval?,
-        reduceMotion: Bool
+        reduceMotion: Bool,
+        allowsAnimation: Bool = true
     ) -> TimeInterval? {
+        guard allowsAnimation else { return nil }
         guard let duration else { return nil }
         return reduceMotion ? 0 : max(0, duration)
     }

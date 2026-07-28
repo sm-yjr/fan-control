@@ -160,6 +160,14 @@ enum FanUIFoundationChecks {
             FanUIMotion.resolvedDuration(nil, reduceMotion: false) == nil,
             "missing animations must stay disabled"
         )
+        require(
+            FanUIMotion.resolvedDuration(
+                0.8,
+                reduceMotion: false,
+                allowsAnimation: false
+            ) == nil,
+            "hidden status UI must not keep a continuous animation alive"
+        )
     }
 
     private static func checkUpdateEntryPresentation() {
