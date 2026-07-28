@@ -33,6 +33,8 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 HELPER_BINARY="$APP_LAUNCH_SERVICES/com.local.fan-control.helper"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+APP_ICON_NAME="FanControl.icns"
+APP_ICON_SOURCE="$ROOT_DIR/Assets/AppIcon/$APP_ICON_NAME"
 
 if [[ ! "$BUILD_CONFIGURATION" =~ ^(debug|release)$ ]]; then
   echo "error: BUILD_CONFIGURATION must be debug or release" >&2
@@ -47,6 +49,11 @@ fi
 if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
   echo "error: BUILD_NUMBER must contain only digits and dots" >&2
   exit 2
+fi
+
+if [[ ! -s "$APP_ICON_SOURCE" ]]; then
+  echo "error: app icon was not found at $APP_ICON_SOURCE" >&2
+  exit 1
 fi
 
 build_arguments=(-c "$BUILD_CONFIGURATION")
@@ -100,6 +107,7 @@ ditto "$BUILD_BINARY" "$HELPER_BINARY"
 ditto "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 ditto "$ROOT_DIR/LICENSE" "$APP_RESOURCES/FanControl-LICENSE.txt"
 ditto "$SPARKLE_CACHE_DIR/LICENSE" "$APP_RESOURCES/Sparkle-LICENSE.txt"
+ditto "$APP_ICON_SOURCE" "$APP_RESOURCES/$APP_ICON_NAME"
 chmod +x "$APP_BINARY" "$HELPER_BINARY"
 
 cat >"$INFO_PLIST" <<PLIST
@@ -115,6 +123,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>Fan Control</string>
   <key>CFBundleDisplayName</key>
   <string>Fan Control</string>
+  <key>CFBundleIconFile</key>
+  <string>$APP_ICON_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -148,6 +158,14 @@ elif [[ "$AD_HOC_CODE_SIGN" == "1" ]]; then
 fi
 
 plutil -lint "$INFO_PLIST" >/dev/null
+if [[ "$(plutil -extract CFBundleIconFile raw "$INFO_PLIST")" != "$APP_ICON_NAME" ]]; then
+  echo "error: packaged app icon metadata is invalid" >&2
+  exit 1
+fi
+if [[ ! -s "$APP_RESOURCES/$APP_ICON_NAME" ]]; then
+  echo "error: packaged app icon is missing" >&2
+  exit 1
+fi
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 echo "Built $APP_BUNDLE"

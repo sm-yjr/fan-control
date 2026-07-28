@@ -56,11 +56,17 @@ jobs:
           test -x "$APP/Contents/MacOS/FanControl"
           test -x "$HELPER"
           test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          test -f "$APP/Contents/Resources/FanControl.icns"
           test -f "$APP/Contents/Resources/FanControl-LICENSE.txt"
           test -f "$APP/Contents/Resources/Sparkle-LICENSE.txt"
           test -x script/sign_app.sh
           test -x script/package_dmg.sh
           bash -n script/package_dmg.sh
+
+          if [[ "$(plutil -extract CFBundleIconFile raw "$APP/Contents/Info.plist")" != "FanControl.icns" ]]; then
+            echo "The packaged app must reference FanControl.icns." >&2
+            exit 1
+          fi
 
           if otool -L "$HELPER" | grep -q "Sparkle.framework"; then
             echo "The privileged helper executable must not link Sparkle.framework." >&2
