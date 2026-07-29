@@ -53,6 +53,7 @@ final class AppState {
     let sensorManager: SensorManager
     let fanController: FanController
     let updateController: UpdateController
+    let batteryMonitor: BatteryMonitor
     let isRunningAsRoot: Bool
     var helperAvailable: Bool = false
     var isInstallingHelper: Bool = false
@@ -67,6 +68,7 @@ final class AppState {
         self.sensorManager = sm
         self.fanController = FanController(sensorManager: sm)
         self.updateController = UpdateController()
+        self.batteryMonitor = BatteryMonitor()
         self.isRunningAsRoot = geteuid() == 0
 
         guard AppInstanceLock.shared.acquire() else {
@@ -89,6 +91,9 @@ final class AppState {
         fanController.start()
         sm.startPolling { [weak self] in
             self?.preferredPollingInterval ?? 2
+        }
+        batteryMonitor.startPolling { [weak self] in
+            self?.isPopoverPresented == true ? 2 : 10
         }
         refreshHelperStatus()
 
@@ -145,6 +150,7 @@ final class AppState {
         guard isPopoverPresented != isPresented else { return }
         isPopoverPresented = isPresented
         sensorManager.reschedulePolling()
+        batteryMonitor.reschedulePolling()
     }
 
     private var preferredPollingInterval: TimeInterval {
@@ -266,6 +272,7 @@ final class AppState {
             object: nil, queue: .main
         ) { [weak self] _ in
             self?.sensorManager.stopPolling()
+            self?.batteryMonitor.stopPolling()
             if self?.canWriteFans == true {
                 self?.fanController.stop()
             }

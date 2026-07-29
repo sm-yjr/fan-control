@@ -131,8 +131,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate, @unchecked Sendab
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         iconView.configure(
             presentation: presentation,
-            reduceMotion: reduceMotion,
-            allowsAnimation: popover.isShown
+            rotationPeriod: presentation.resolvedRotationPeriod(
+                reduceMotion: reduceMotion,
+                isStatusItemVisible: statusItem.isVisible
+            )
         )
     }
 
@@ -200,8 +202,7 @@ private final class StatusFanImageView: NSImageView {
 
     func configure(
         presentation: FanStatusPresentation,
-        reduceMotion: Bool,
-        allowsAnimation: Bool
+        rotationPeriod: TimeInterval?
     ) {
         if appliedLevel != presentation.level || image == nil {
             let weight: NSFont.Weight = presentation.level == .high
@@ -221,11 +222,7 @@ private final class StatusFanImageView: NSImageView {
             appliedLevel = presentation.level
         }
 
-        guard let rotationPeriod = FanUIMotion.resolvedDuration(
-            presentation.rotationPeriod,
-            reduceMotion: reduceMotion,
-            allowsAnimation: allowsAnimation
-        ), rotationPeriod > 0 else {
+        guard let rotationPeriod, rotationPeriod > 0 else {
             stopRotation()
             return
         }

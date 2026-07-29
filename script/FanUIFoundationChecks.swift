@@ -9,8 +9,8 @@ enum FanUIFoundationChecks {
         checkSemanticColorCoverage()
         checkTemperaturePresentations()
         checkThermalLoadPresentations()
+        checkBatteryPresentations()
         checkFanSpeedPresentation()
-        checkReduceMotionPolicy()
         checkUpdateEntryPresentation()
         print("FanUI foundation checks passed")
     }
@@ -114,6 +114,82 @@ enum FanUIFoundationChecks {
         )
     }
 
+    private static func checkBatteryPresentations() {
+        let normal = FanMetricPresentation.batteryLevel(
+            percent: 85,
+            isCharging: false
+        )
+        require(normal.valueText == "85%", "battery level formatting changed")
+        require(normal.tone == .neutral, "healthy battery level must stay neutral")
+        require(
+            normal.accessibilityValue == "85 percent",
+            "battery level accessibility value changed"
+        )
+
+        require(
+            FanMetricPresentation.batteryLevel(percent: 18, isCharging: false).tone == .caution,
+            "low battery must use caution emphasis"
+        )
+        require(
+            FanMetricPresentation.batteryLevel(percent: 8, isCharging: false).tone == .critical,
+            "nearly empty battery must use critical emphasis"
+        )
+        let charging = FanMetricPresentation.batteryLevel(
+            percent: 50,
+            isCharging: true
+        )
+        require(charging.tone == .success, "charging battery must use success emphasis")
+        require(
+            charging.accessibilityValue == "50 percent, charging",
+            "charging battery accessibility value changed"
+        )
+        require(
+            FanMetricPresentation.batteryLevel(percent: .nan, isCharging: false).valueText == "—",
+            "invalid battery level must fail closed"
+        )
+
+        let chargingPower = FanMetricPresentation.batteryPower(watts: 32.46)
+        require(chargingPower.valueText == "+32.5 W", "charging power formatting changed")
+        require(chargingPower.tone == .success, "charging power must use success emphasis")
+        require(
+            chargingPower.accessibilityValue == "32.5 watts charging",
+            "charging power accessibility value changed"
+        )
+
+        let dischargingPower = FanMetricPresentation.batteryPower(watts: -18.2)
+        require(dischargingPower.valueText == "-18.2 W", "discharging power formatting changed")
+        require(dischargingPower.tone == .neutral, "discharging power must stay neutral")
+        require(
+            dischargingPower.accessibilityValue == "18.2 watts discharging",
+            "discharging power accessibility value changed"
+        )
+
+        require(
+            FanMetricPresentation.batteryPower(watts: 0.01).valueText == "0.0 W",
+            "near-zero battery power must display as zero without a sign"
+        )
+        require(
+            FanMetricPresentation.batteryPower(watts: .nan).valueText == "—",
+            "invalid battery power must fail closed"
+        )
+
+        let adapter = FanMetricPresentation.adapterPower(watts: 96)
+        require(adapter.valueText == "96 W", "adapter power formatting changed")
+        require(adapter.tone == .neutral, "adapter power must stay neutral")
+        require(
+            adapter.accessibilityValue == "96 watts",
+            "adapter power accessibility value changed"
+        )
+        require(
+            FanMetricPresentation.adapterPower(watts: 0).valueText == "—",
+            "disconnected adapter power must fail closed"
+        )
+        require(
+            FanMetricPresentation.adapterPower(watts: .nan).valueText == "—",
+            "invalid adapter power must fail closed"
+        )
+    }
+
     private static func checkFanSpeedPresentation() {
         let stopped = FanProgressPresentation.fanSpeed(
             currentRPM: 0,
@@ -145,29 +221,6 @@ enum FanUIFoundationChecks {
             fanName: "Left Fan"
         )
         require(invalid.fraction == 0, "invalid fan bounds must fail closed")
-    }
-
-    private static func checkReduceMotionPolicy() {
-        require(
-            FanUIMotion.resolvedDuration(0.8, reduceMotion: false) == 0.8,
-            "standard animation duration changed"
-        )
-        require(
-            FanUIMotion.resolvedDuration(0.8, reduceMotion: true) == 0,
-            "Reduce Motion must remove nonessential animation"
-        )
-        require(
-            FanUIMotion.resolvedDuration(nil, reduceMotion: false) == nil,
-            "missing animations must stay disabled"
-        )
-        require(
-            FanUIMotion.resolvedDuration(
-                0.8,
-                reduceMotion: false,
-                allowsAnimation: false
-            ) == nil,
-            "hidden status UI must not keep a continuous animation alive"
-        )
     }
 
     private static func checkUpdateEntryPresentation() {

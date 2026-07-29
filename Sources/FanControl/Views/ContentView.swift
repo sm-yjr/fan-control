@@ -111,6 +111,15 @@ struct ContentView: View {
                         )
                     )
                 }
+                if let battery = appState.batteryMonitor.reading {
+                    FanMetricBadge(
+                        label: "Battery",
+                        presentation: .batteryLevel(
+                            percent: battery.levelPercent,
+                            isCharging: battery.isCharging
+                        )
+                    )
+                }
                 Spacer()
                 Button {
                     showAllSensors.toggle()
@@ -133,6 +142,10 @@ struct ContentView: View {
                         alignment: .leading,
                         spacing: FanUISpacing.small.points
                     ) {
+                        if let battery = appState.batteryMonitor.reading {
+                            batterySummary(battery)
+                            Divider()
+                        }
                         if sensorManager.thermalDemandAvailable {
                             thermalModelSummary
                             Divider()
@@ -143,6 +156,52 @@ struct ContentView: View {
                 .frame(maxHeight: 150)
                 .padding(.horizontal, FanUISpacing.large.points)
                 .padding(.bottom, FanUISpacing.small.points)
+            }
+        }
+    }
+
+    private func batterySummary(_ battery: BatteryReading) -> some View {
+        let level = FanMetricPresentation.batteryLevel(
+            percent: battery.levelPercent,
+            isCharging: battery.isCharging
+        )
+        let power = FanMetricPresentation.batteryPower(
+            watts: battery.powerWatts
+        )
+        let source = battery.hasExternalPower
+            ? (battery.isCharging ? "Power adapter (charging)" : "Power adapter")
+            : "Battery"
+
+        return VStack(
+            alignment: .leading,
+            spacing: FanUISpacing.hairline.points
+        ) {
+            Text("BATTERY")
+                .font(FanUITextStyle.sectionHeading.font)
+                .foregroundStyle(FanUIColorRole.secondaryText.color)
+            FanStatusRow(
+                title: "Charge level",
+                value: level.valueText,
+                tone: level.tone
+            )
+            FanStatusRow(
+                title: "Battery power",
+                value: power.valueText,
+                tone: power.tone
+            )
+            FanStatusRow(
+                title: "Power source",
+                value: source
+            )
+            if let adapterWatts = battery.adapterWatts {
+                let adapter = FanMetricPresentation.adapterPower(
+                    watts: adapterWatts
+                )
+                FanStatusRow(
+                    title: "Adapter power",
+                    value: adapter.valueText,
+                    tone: adapter.tone
+                )
             }
         }
     }

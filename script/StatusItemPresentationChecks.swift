@@ -8,6 +8,7 @@ enum StatusItemPresentationChecks {
         checkHighSpeedUsesFasterAnimation()
         checkFastestFanDeterminesStatus()
         checkReduceMotionStopsTimeline()
+        checkMenuBarAnimatesWithoutPopover()
         checkRotationPhase()
         checkStatusIconUsesGeometricCenter()
         print("Status item presentation checks passed")
@@ -61,6 +62,45 @@ enum StatusItemPresentationChecks {
 
         require(presentation.shouldAnimate(reduceMotion: false), "active fan did not animate")
         require(!presentation.shouldAnimate(reduceMotion: true), "Reduce Motion did not pause animation")
+    }
+
+    private static func checkMenuBarAnimatesWithoutPopover() {
+        let active = FanStatusPresentation.resolve(samples: [
+            FanRotationSample(currentRPM: 2_300, minimumRPM: 2_000, maximumRPM: 6_000),
+        ])
+
+        require(
+            active.resolvedRotationPeriod(
+                reduceMotion: false,
+                isStatusItemVisible: true
+            ) == 2.4,
+            "visible status icon must animate without opening the popover"
+        )
+        require(
+            active.resolvedRotationPeriod(
+                reduceMotion: true,
+                isStatusItemVisible: true
+            ) == nil,
+            "Reduce Motion must stop the menu bar animation"
+        )
+        require(
+            active.resolvedRotationPeriod(
+                reduceMotion: false,
+                isStatusItemVisible: false
+            ) == nil,
+            "hidden status icon must not keep a continuous animation alive"
+        )
+
+        let stopped = FanStatusPresentation.resolve(samples: [
+            FanRotationSample(currentRPM: 0, minimumRPM: 2_000, maximumRPM: 6_000),
+        ])
+        require(
+            stopped.resolvedRotationPeriod(
+                reduceMotion: false,
+                isStatusItemVisible: true
+            ) == nil,
+            "stopped fans must not animate in the menu bar"
+        )
     }
 
     private static func checkRotationPhase() {

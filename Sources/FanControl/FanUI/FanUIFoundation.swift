@@ -139,6 +139,70 @@ struct FanMetricPresentation: Equatable {
         )
     }
 
+    static func batteryLevel(
+        percent: Double,
+        isCharging: Bool
+    ) -> FanMetricPresentation {
+        guard percent.isFinite else { return unavailable }
+
+        let clamped = min(max(percent, 0), 100)
+        let tone: FanUITone
+        if isCharging {
+            tone = .success
+        } else if clamped <= 10 {
+            tone = .critical
+        } else if clamped <= 20 {
+            tone = .caution
+        } else {
+            tone = .neutral
+        }
+
+        return FanMetricPresentation(
+            valueText: String(format: "%.0f%%", clamped),
+            accessibilityValue: String(
+                format: isCharging
+                    ? "%.0f percent, charging"
+                    : "%.0f percent",
+                clamped
+            ),
+            tone: tone
+        )
+    }
+
+    static func batteryPower(watts: Double) -> FanMetricPresentation {
+        guard watts.isFinite else { return unavailable }
+
+        if abs(watts) < 0.05 {
+            return FanMetricPresentation(
+                valueText: "0.0 W",
+                accessibilityValue: "0 watts",
+                tone: .neutral
+            )
+        }
+
+        let charging = watts > 0
+        return FanMetricPresentation(
+            valueText: String(format: "%+.1f W", watts),
+            accessibilityValue: String(
+                format: charging
+                    ? "%.1f watts charging"
+                    : "%.1f watts discharging",
+                abs(watts)
+            ),
+            tone: charging ? .success : .neutral
+        )
+    }
+
+    static func adapterPower(watts: Double) -> FanMetricPresentation {
+        guard watts.isFinite, watts > 0 else { return unavailable }
+
+        return FanMetricPresentation(
+            valueText: String(format: "%.0f W", watts),
+            accessibilityValue: String(format: "%.0f watts", watts),
+            tone: .neutral
+        )
+    }
+
     private static func temperature(
         _ value: Double,
         normalTone: FanUITone,
@@ -230,18 +294,6 @@ struct FanProgressPresentation: Equatable {
         }
         let grouped = String(reversed.reversed())
         return value < 0 ? "-\(grouped)" : grouped
-    }
-}
-
-enum FanUIMotion {
-    static func resolvedDuration(
-        _ duration: TimeInterval?,
-        reduceMotion: Bool,
-        allowsAnimation: Bool = true
-    ) -> TimeInterval? {
-        guard allowsAnimation else { return nil }
-        guard let duration else { return nil }
-        return reduceMotion ? 0 : max(0, duration)
     }
 }
 

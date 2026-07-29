@@ -96,6 +96,14 @@ struct FanStatusPresentation: Equatable {
         !reduceMotion && rotationPeriod != nil
     }
 
+    func resolvedRotationPeriod(
+        reduceMotion: Bool,
+        isStatusItemVisible: Bool
+    ) -> TimeInterval? {
+        guard isStatusItemVisible, !reduceMotion else { return nil }
+        return rotationPeriod
+    }
+
     func angle(at time: TimeInterval) -> Double {
         guard let rotationPeriod, rotationPeriod > 0 else { return 0 }
         let phase = time.truncatingRemainder(dividingBy: rotationPeriod)
