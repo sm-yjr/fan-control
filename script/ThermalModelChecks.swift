@@ -11,6 +11,7 @@ enum ThermalModelChecks {
         checkLegacyMigration()
         checkControlSourceScaleChange()
         checkPollingCadence()
+        checkManualSpeedWritePolicy()
         print("Thermal model checks passed")
     }
 
@@ -209,6 +210,37 @@ enum ThermalModelChecks {
             ) == 2,
             "visible UI did not restore responsive polling"
         )
+    }
+
+    private static func checkManualSpeedWritePolicy() {
+        let requestedRPM = 4_599
+        let previousRPM = 2_300
+        let manualTarget = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: requestedRPM,
+            previousRPM: previousRPM,
+            elapsed: 1,
+            controlMode: .manual(rpm: requestedRPM),
+            maximumRampUpPerSecond: 350,
+            maximumRampDownPerSecond: 250,
+            bypassRampLimit: false,
+            preservesStartFromStopped: false
+        )
+        require(
+            manualTarget == requestedRPM,
+            "manual speed change was truncated by the curve ramp limit"
+        )
+
+        let curveTarget = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: requestedRPM,
+            previousRPM: previousRPM,
+            elapsed: 1,
+            controlMode: .curve(configId: UUID()),
+            maximumRampUpPerSecond: 350,
+            maximumRampDownPerSecond: 250,
+            bypassRampLimit: false,
+            preservesStartFromStopped: false
+        )
+        require(curveTarget == 2_650, "curve speed change lost its ramp limit")
     }
 
     private static func approximatelyEqual(_ lhs: Double, _ rhs: Double) -> Bool {

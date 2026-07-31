@@ -532,23 +532,24 @@ final class FanController {
     }
 
     private func applyRampLimit(fanId: Int, targetRPM: Int, allowBelowMin: Bool, bypass: Bool) -> Int {
-        guard !bypass else { return targetRPM }
         guard let fan = sensorManager.fans.first(where: { $0.id == fanId }) else { return targetRPM }
 
         let now = Date()
         let previousRPM = lastTargetRPM[fanId] ?? Int(fan.currentSpeed)
-        guard previousRPM != targetRPM else { return targetRPM }
+        let elapsed = now.timeIntervalSince(lastWriteAt[fanId] ?? now)
+        let controlMode = fanStates.first(where: { $0.fanId == fanId })?.mode ?? .automatic
+        let limitedRPM = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: targetRPM,
+            previousRPM: previousRPM,
+            elapsed: elapsed,
+            controlMode: controlMode,
+            maximumRampUpPerSecond: maxRampUpRPMPerSecond,
+            maximumRampDownPerSecond: maxRampDownRPMPerSecond,
+            bypassRampLimit: bypass,
+            preservesStartFromStopped: previousRPM == 0 && targetRPM > 0 && !allowBelowMin
+        )
+        guard limitedRPM != targetRPM else { return targetRPM }
 
-        if previousRPM == 0 && targetRPM > 0 && !allowBelowMin {
-            return targetRPM
-        }
-
-        let elapsed = max(now.timeIntervalSince(lastWriteAt[fanId] ?? now), 1.0)
-        let isRampUp = targetRPM > previousRPM
-        let maxDelta = Int((isRampUp ? maxRampUpRPMPerSecond : maxRampDownRPMPerSecond) * elapsed)
-        guard abs(targetRPM - previousRPM) > maxDelta else { return targetRPM }
-
-        let limitedRPM = previousRPM + (isRampUp ? maxDelta : -maxDelta)
         let clamped = clampRPM(limitedRPM, forFan: fanId, allowBelowMin: allowBelowMin)
         debugLog("[FanControl] timeHysteresis fan=\(fanId) desired=\(targetRPM) limited=\(clamped) previous=\(previousRPM) elapsed=\(String(format: "%.1f", elapsed))s")
         return clamped
