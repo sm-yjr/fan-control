@@ -1,6 +1,9 @@
 import Foundation
 
 enum FanSpeedWritePolicy {
+    private static let curveWriteDwell: TimeInterval = 6
+    private static let curveImmediateDeltaRPM = 300
+
     static func targetRPM(
         requestedRPM: Int,
         previousRPM: Int,
@@ -18,11 +21,36 @@ enum FanSpeedWritePolicy {
         guard !preservesStartFromStopped else { return requestedRPM }
         guard previousRPM != requestedRPM else { return requestedRPM }
 
-        let isRampUp = requestedRPM > previousRPM
+        let coalescedRPM = coalescedCurveTarget(
+            requestedRPM: requestedRPM,
+            previousRPM: previousRPM,
+            elapsed: elapsed,
+            controlMode: controlMode
+        )
+        guard previousRPM != coalescedRPM else { return previousRPM }
+
+        let isRampUp = coalescedRPM > previousRPM
         let maximumDelta = Int(
             (isRampUp ? maximumRampUpPerSecond : maximumRampDownPerSecond) * max(elapsed, 1)
         )
-        guard abs(requestedRPM - previousRPM) > maximumDelta else { return requestedRPM }
+        guard abs(coalescedRPM - previousRPM) > maximumDelta else { return coalescedRPM }
         return previousRPM + (isRampUp ? maximumDelta : -maximumDelta)
+    }
+
+    private static func coalescedCurveTarget(
+        requestedRPM: Int,
+        previousRPM: Int,
+        elapsed: TimeInterval,
+        controlMode: FanControlMode
+    ) -> Int {
+        guard case .curve = controlMode,
+              requestedRPM > 0,
+              previousRPM > 0,
+              elapsed > 0,
+              elapsed < curveWriteDwell,
+              abs(requestedRPM - previousRPM) < curveImmediateDeltaRPM else {
+            return requestedRPM
+        }
+        return previousRPM
     }
 }
