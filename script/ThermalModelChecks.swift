@@ -11,7 +11,7 @@ enum ThermalModelChecks {
         checkLegacyMigration()
         checkControlSourceScaleChange()
         checkPollingCadence()
-        checkManualSpeedWritePolicy()
+        checkFanSpeedWritePolicy()
         print("Thermal model checks passed")
     }
 
@@ -189,30 +189,39 @@ enum ThermalModelChecks {
                 thermalPressure: .nominal,
                 hottestSiliconTemperature: 55,
                 activity: .curve
-            ) == 2,
-            "curve mode lost its responsive polling cadence"
+            ) == 3,
+            "curve mode did not use the reduced background cadence"
         )
         require(
             SensorPollingPolicy.interval(
                 isPopoverPresented: false,
                 thermalPressure: .serious,
                 hottestSiliconTemperature: 55,
-                activity: .automatic
+                activity: .curve
             ) == 2,
             "serious thermal pressure did not restore responsive polling"
+        )
+        require(
+            SensorPollingPolicy.interval(
+                isPopoverPresented: false,
+                thermalPressure: .nominal,
+                hottestSiliconTemperature: 90,
+                activity: .curve
+            ) == 2,
+            "high silicon temperature did not restore responsive polling"
         )
         require(
             SensorPollingPolicy.interval(
                 isPopoverPresented: true,
                 thermalPressure: .nominal,
                 hottestSiliconTemperature: 55,
-                activity: .automatic
+                activity: .curve
             ) == 2,
             "visible UI did not restore responsive polling"
         )
     }
 
-    private static func checkManualSpeedWritePolicy() {
+    private static func checkFanSpeedWritePolicy() {
         let requestedRPM = 4_599
         let previousRPM = 2_300
         let manualTarget = FanSpeedWritePolicy.targetRPM(
@@ -230,17 +239,66 @@ enum ThermalModelChecks {
             "manual speed change was truncated by the curve ramp limit"
         )
 
+        let curveMode = FanControlMode.curve(configId: UUID())
         let curveTarget = FanSpeedWritePolicy.targetRPM(
             requestedRPM: requestedRPM,
             previousRPM: previousRPM,
             elapsed: 1,
-            controlMode: .curve(configId: UUID()),
+            controlMode: curveMode,
             maximumRampUpPerSecond: 350,
             maximumRampDownPerSecond: 250,
             bypassRampLimit: false,
             preservesStartFromStopped: false
         )
         require(curveTarget == 2_650, "curve speed change lost its ramp limit")
+
+        let coalescedTarget = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: 2_480,
+            previousRPM: previousRPM,
+            elapsed: 3,
+            controlMode: curveMode,
+            maximumRampUpPerSecond: 350,
+            maximumRampDownPerSecond: 250,
+            bypassRampLimit: false,
+            preservesStartFromStopped: false
+        )
+        require(coalescedTarget == previousRPM, "small curve speed change was not coalesced")
+
+        let thresholdTarget = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: 2_600,
+            previousRPM: previousRPM,
+            elapsed: 3,
+            controlMode: curveMode,
+            maximumRampUpPerSecond: 350,
+            maximumRampDownPerSecond: 250,
+            bypassRampLimit: false,
+            preservesStartFromStopped: false
+        )
+        require(thresholdTarget == 2_600, "large curve speed change lost responsiveness")
+
+        let dwellExpiredTarget = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: 2_480,
+            previousRPM: previousRPM,
+            elapsed: 6,
+            controlMode: curveMode,
+            maximumRampUpPerSecond: 350,
+            maximumRampDownPerSecond: 250,
+            bypassRampLimit: false,
+            preservesStartFromStopped: false
+        )
+        require(dwellExpiredTarget == 2_480, "curve write remained coalesced after dwell expired")
+
+        let urgentTarget = FanSpeedWritePolicy.targetRPM(
+            requestedRPM: 2_480,
+            previousRPM: previousRPM,
+            elapsed: 3,
+            controlMode: curveMode,
+            maximumRampUpPerSecond: 350,
+            maximumRampDownPerSecond: 250,
+            bypassRampLimit: true,
+            preservesStartFromStopped: false
+        )
+        require(urgentTarget == 2_480, "urgent curve speed change was coalesced")
     }
 
     private static func approximatelyEqual(_ lhs: Double, _ rhs: Double) -> Bool {
