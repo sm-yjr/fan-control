@@ -275,19 +275,26 @@ struct ContentView: View {
             let fanId = fan.id
 
             VStack(spacing: FanUISpacing.medium.points) {
-                modeRow(fan: fan)
+                if fan.maxSpeedKnown {
+                    modeRow(fan: fan)
 
-                if let stateIdx = fanController.fanStates.firstIndex(where: { $0.fanId == fanId }) {
-                    let state = fanController.fanStates[stateIdx]
+                    if let stateIdx = fanController.fanStates.firstIndex(where: { $0.fanId == fanId }) {
+                        let state = fanController.fanStates[stateIdx]
 
-                    switch state.mode {
-                    case .curve:
-                        inlineCurveEditor(fanId: fanId, stateIndex: stateIdx)
-                    case .manual(let rpm):
-                        manualSlider(fanId: fanId, fan: fan, rpm: rpm)
-                    case .automatic:
-                        autoIndicator
+                        switch state.mode {
+                        case .curve:
+                            inlineCurveEditor(fanId: fanId, stateIndex: stateIdx)
+                        case .manual(let rpm):
+                            manualSlider(fanId: fanId, fan: fan, rpm: rpm)
+                        case .automatic:
+                            autoIndicator
+                        }
                     }
+                } else {
+                    // Without a known maximum there is no safe target to
+                    // command: offer no manual or curve control and leave
+                    // the fan under system management.
+                    unknownLimitsIndicator(fan: fan)
                 }
 
                 speedIndicator(fan: fan)
@@ -462,15 +469,22 @@ struct ContentView: View {
     // MARK: - Manual slider
 
     private func manualSlider(fanId: Int, fan: FanInfo, rpm: Int) -> some View {
-        VStack(spacing: FanUISpacing.xSmall.points) {
+        // Defense in depth: even with discovery-time validation, never build
+        // a ClosedRange from raw sensor data — an inverted or non-finite
+        // range traps the whole app.
+        let bounds = FanSpeedRange.sliderBounds(
+            minSpeed: fan.minSpeed,
+            maxSpeed: fan.maxSpeed
+        )
+        return VStack(spacing: FanUISpacing.xSmall.points) {
             Slider(
                 value: Binding(
-                    get: { Double(rpm) },
+                    get: { min(max(Double(rpm), bounds.lowerBound), bounds.upperBound) },
                     set: { val in
                         fanController.setMode(.manual(rpm: Int(val)), forFan: fanId)
                     }
                 ),
-                in: fan.minSpeed...fan.maxSpeed,
+                in: bounds.lowerBound...bounds.upperBound,
                 step: 50
             ) {
                 Text("Target fan speed")
@@ -478,11 +492,11 @@ struct ContentView: View {
             .labelsHidden()
             .accessibilityValue("\(rpm) RPM")
             HStack {
-                Text("\(Int(fan.minSpeed))")
+                Text("\(Int(bounds.lowerBound))")
                 Spacer()
                 Text("Target: \(rpm) RPM").fontWeight(.medium)
                 Spacer()
-                Text("\(Int(fan.maxSpeed))")
+                Text("\(Int(bounds.upperBound))")
             }
             .font(FanUITextStyle.metadata.font)
             .foregroundStyle(FanUIColorRole.secondaryText.color)
@@ -502,6 +516,18 @@ struct ContentView: View {
         )
         .padding(.horizontal, FanUISpacing.large.points)
         .padding(.vertical, FanUISpacing.xxLarge.points)
+    }
+
+    private func unknownLimitsIndicator(fan: FanInfo) -> some View {
+        FanStatusRow(
+            title: "Fan control",
+            value: "Speed limits unavailable — system automatic only",
+            systemImage: "exclamationmark.triangle",
+            tone: .warning
+        )
+        .padding(.horizontal, FanUISpacing.large.points)
+        .padding(.vertical, FanUISpacing.xxLarge.points)
+        .accessibilityLabel("\(fan.name): speed limits unavailable, system automatic only")
     }
 
     // MARK: - Speed indicator
@@ -561,8 +587,10 @@ struct ContentView: View {
             Spacer()
 
             Button("Quit") {
-                fanController.stop()
-                NSApplication.shared.terminate(nil)
+                // Hands the fans back to system control with a bounded wait
+                // before the process exits; terminating immediately would
+                // leave them forced at the last app-set speed.
+                appState.requestTermination()
             }
             .buttonStyle(.borderless)
             .controlSize(.small)

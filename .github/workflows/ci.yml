@@ -35,6 +35,9 @@ jobs:
       - name: Verify app launch mode
         run: ./script/test_app_launch_mode.sh
 
+      - name: Verify app instance lock
+        run: ./script/test_app_instance_lock.sh
+
       - name: Verify packaged Sparkle runtime
         run: ./script/test_update_runtime.sh
 

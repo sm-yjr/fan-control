@@ -236,7 +236,7 @@ final class SMCKit {
     }
 
     func getAllKeys() -> [String] {
-        guard let keysNum = getValue("#KEY") else { return [] }
+        guard let keysNum = getValue("#KEY"), keysNum.isFinite, keysNum >= 0 else { return [] }
         var list: [String] = []
 
         for i in 0...Int(keysNum) {
@@ -263,44 +263,119 @@ final class SMCKit {
         return fanModeKeyIsLower! ? "F\(id)md" : "F\(id)Md"
     }
 
-    func setFanMode(_ id: Int, mode: FanMode) {
+    /// Applies a fan mode change and reports whether the hardware really
+    /// accepted it.
+    ///
+    /// Switching back to automatic is a hardware-safety path: the target
+    /// (`F<n>Tg`) is only cleared after the mode register reads back as
+    /// automatic. If the mode write fails while the fan is still forced,
+    /// writing target 0 would stop a fan that the system is not controlling,
+    /// so the failure is propagated instead.
+    @discardableResult
+    func setFanMode(_ id: Int, mode: FanMode) -> Bool {
         debugLog("[FanControl] smc.setFanMode fan=\(id) mode=\(mode)")
+
+        // Validate before any "F\(id)..." key is interpolated: an invalid id
+        // would not just fail the request, it would crash the daemon.
+        guard FanIDBounds.isValidFanId(id, fanCount: getValue("FNum")) else {
+            debugLog("[FanControl] smc.setFanMode fan=\(id) result=failed reason=invalidFanId")
+            return false
+        }
+
         if mode == .forced {
             if unlockFanControl(fanId: id) {
                 forcedModeFans.insert(id)
                 debugLog("[FanControl] smc.setFanMode forced fan=\(id) result=ok")
+                return true
             } else {
                 debugLog("[FanControl] smc.setFanMode forced fan=\(id) result=failed")
+                return false
             }
-        } else {
-            forcedModeFans.remove(id)
-            let modeKey = fanModeKey(id)
-            if getValue(modeKey) != nil {
-                var modeVal = SMCValue(modeKey)
-                guard read(&modeVal) == kIOReturnSuccess else { return }
-                if modeVal.bytes[0] != 0 {
-                    modeVal.bytes[0] = 0
-                    writeWithRetry(modeVal)
-                }
-            }
-
-            var targetValue = SMCValue("F\(id)Tg")
-            guard read(&targetValue) == kIOReturnSuccess else { return }
-
-            let bytes = Float(0).asBytes
-            targetValue.bytes[0] = bytes[0]
-            targetValue.bytes[1] = bytes[1]
-            targetValue.bytes[2] = bytes[2]
-            targetValue.bytes[3] = bytes[3]
-            writeWithRetry(targetValue)
         }
+
+        // No optional path around the mode register: a transient getValue
+        // failure used to skip verification entirely and still zero the
+        // target. The register read itself is now mandatory, and any failed
+        // step returns before the target is touched.
+        let modeKey = fanModeKey(id)
+        var modeVal = SMCValue(modeKey)
+        guard read(&modeVal) == kIOReturnSuccess else {
+            debugLog("[FanControl] smc.setFanMode auto fan=\(id) result=failed reason=readMode")
+            return false
+        }
+
+        let wasForced = modeVal.bytes[0] != 0
+        if wasForced {
+            modeVal.bytes[0] = 0
+            guard writeWithRetry(modeVal) else {
+                // Hardware is still forced; keep the cache saying so.
+                forcedModeFans.insert(id)
+                debugLog("[FanControl] smc.setFanMode auto fan=\(id) result=failed reason=writeMode")
+                return false
+            }
+        }
+
+        // Read the register back instead of trusting the write or the
+        // process-local cache; only a fan that is confirmed automatic may
+        // have its target cleared.
+        var verifyVal = SMCValue(modeKey)
+        guard read(&verifyVal) == kIOReturnSuccess else {
+            if wasForced { forcedModeFans.insert(id) }
+            debugLog("[FanControl] smc.setFanMode auto fan=\(id) result=failed reason=verifyRead")
+            return false
+        }
+        guard verifyVal.bytes[0] == 0 else {
+            forcedModeFans.insert(id)
+            debugLog("[FanControl] smc.setFanMode auto fan=\(id) result=failed reason=stillForced modeByte=\(verifyVal.bytes[0])")
+            return false
+        }
+
+        // Only now is the fan confirmed system-controlled.
+        forcedModeFans.remove(id)
+
+        var targetValue = SMCValue("F\(id)Tg")
+        guard read(&targetValue) == kIOReturnSuccess else {
+            debugLog("[FanControl] smc.setFanMode auto fan=\(id) result=failed reason=readTarget")
+            return false
+        }
+
+        let bytes = Float(0).asBytes
+        targetValue.bytes[0] = bytes[0]
+        targetValue.bytes[1] = bytes[1]
+        targetValue.bytes[2] = bytes[2]
+        targetValue.bytes[3] = bytes[3]
+        let ok = writeWithRetry(targetValue)
+        debugLog("[FanControl] smc.setFanMode auto fan=\(id) result=\(ok ? "ok" : "failed reason=writeTarget")")
+        return ok
     }
 
-    func setFanSpeed(_ id: Int, speed: Int) {
+    @discardableResult
+    func setFanSpeed(_ id: Int, speed: Int) -> Bool {
         debugLog("[FanControl] smc.setFanSpeed fan=\(id) requested=\(speed)")
-        if let maxSpeed = getValue("F\(id)Mx"), speed > Int(maxSpeed) {
-            debugLog("[FanControl] smc.setFanSpeed fan=\(id) clampToMax=\(Int(maxSpeed))")
-            return setFanSpeed(id, speed: Int(maxSpeed))
+
+        // Validate before any "F\(id)..." key is interpolated: an invalid id
+        // would not just fail the request, it would crash the daemon.
+        guard FanIDBounds.isValidFanId(id, fanCount: getValue("FNum")) else {
+            debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=invalidFanId")
+            return false
+        }
+
+        // Fail closed unless the live Mn/Mx bounds are both readable and
+        // sane: an RPM write that is not bounded on both sides must never
+        // reach the encoder. This also rejects negative requests before the
+        // FPE2 UInt8 conversion could trap, and clamps positive requests up
+        // to the minimum so a 1 RPM write can never be accepted below it.
+        guard let boundedSpeed = FanRPMBounds.validatedRPM(
+            requestedRPM: speed,
+            minimumRPM: getValue("F\(id)Mn"),
+            maximumRPM: getValue("F\(id)Mx"),
+            allowFanOff: true
+        ) else {
+            debugLog("[FanControl] smc.setFanSpeed fan=\(id) requested=\(speed) result=failed reason=bounds")
+            return false
+        }
+        if boundedSpeed != speed {
+            debugLog("[FanControl] smc.setFanSpeed fan=\(id) clampToMax=\(boundedSpeed)")
         }
 
         // Sleep resets the hardware fan mode to automatic without restarting
@@ -310,7 +385,7 @@ final class SMCKit {
         var modeVal = SMCValue(fanModeKey(id))
         guard read(&modeVal) == kIOReturnSuccess else {
             debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=readMode")
-            return
+            return false
         }
 
         let hardwareIsForced = modeVal.bytes[0] == 1
@@ -329,41 +404,66 @@ final class SMCKit {
             }
 
             guard canAttemptUnlock(fanId: id) else {
-                debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=skipped reason=unlockCooldown")
-                return
+                debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=unlockCooldown")
+                return false
             }
             lastUnlockAttemptAt[id] = Date()
             guard unlockFanControl(fanId: id) else {
                 debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=unlock")
-                return
+                return false
             }
         }
         forcedModeFans.insert(id)
 
+        // From here on the hardware is forced (either we just unlocked it or
+        // it already was). Every remaining path where the new target is not
+        // confirmed must hand the fan back to system control — removing the
+        // process-local cache entry alone would leave the hardware forced at
+        // a stale target.
         var value = SMCValue("F\(id)Tg")
         guard read(&value) == kIOReturnSuccess else {
-            debugLog("[FanControl] smc.setFanSpeed fan=\(id) result=failed reason=readTarget")
-            return
+            fallBackToAutomatic(fanId: id, reason: "readTarget")
+            return false
         }
         debugLog("[FanControl] smc.setFanSpeed fan=\(id) targetType=\(value.dataType)")
 
+        guard FanTargetWritePolicy.isEncodableTargetType(value.dataType) else {
+            fallBackToAutomatic(fanId: id, reason: "unknownTargetType(\(value.dataType))")
+            return false
+        }
+
+        // boundedSpeed is guaranteed non-negative and within the encodable
+        // range by FanRPMBounds, so these conversions cannot trap.
         if value.dataType == SMCDataType.FLT.rawValue {
-            let bytes = Float(speed).asBytes
+            let bytes = Float(boundedSpeed).asBytes
             value.bytes[0] = bytes[0]
             value.bytes[1] = bytes[1]
             value.bytes[2] = bytes[2]
             value.bytes[3] = bytes[3]
-        } else if value.dataType == SMCDataType.FPE2.rawValue {
-            value.bytes[0] = UInt8(speed >> 6)
-            value.bytes[1] = UInt8((speed << 2) ^ ((speed >> 6) << 8))
+        } else {
+            value.bytes[0] = UInt8(boundedSpeed >> 6)
+            value.bytes[1] = UInt8((boundedSpeed << 2) ^ ((boundedSpeed >> 6) << 8))
         }
 
         if writeWithRetry(value) {
-            debugLog("[FanControl] smc.setFanSpeed fan=\(id) target=\(speed) result=ok")
+            debugLog("[FanControl] smc.setFanSpeed fan=\(id) target=\(boundedSpeed) result=ok")
+            return true
         } else {
-            forcedModeFans.remove(id)
-            debugLog("[FanControl] smc.setFanSpeed fan=\(id) target=\(speed) result=failed reason=writeTarget")
+            fallBackToAutomatic(fanId: id, reason: "writeTarget")
+            return false
         }
+    }
+
+    /// Best-effort return of a fan to system control after a forced-mode
+    /// target write could not be confirmed. `setFanMode(.automatic)`
+    /// verifies the mode register itself and manages the forced-mode cache;
+    /// the fallback outcome is logged either way.
+    private func fallBackToAutomatic(fanId: Int, reason: String) {
+        let restored = setFanMode(fanId, mode: .automatic)
+        debugLog(
+            "[FanControl] smc.setFanSpeed fan=\(fanId) fallback=automatic reason=\(reason) "
+                + "result=\(restored ? "ok" : "failed")"
+        )
     }
 
     @discardableResult
@@ -377,9 +477,11 @@ final class SMCKit {
             return writeWithRetry(value)
         }
 
-        guard let count = getValue("FNum") else { return false }
+        // Shared FanIDBounds validation: a corrupt FNum fails closed and
+        // can never interpolate keys that do not exist.
+        guard let fanLimit = FanIDBounds.validFanCount(getValue("FNum")) else { return false }
         var success = true
-        for i in 0..<Int(count) {
+        for i in 0..<fanLimit {
             let modeKey = fanModeKey(i)
             var modeVal = SMCValue(modeKey)
             guard read(&modeVal) == kIOReturnSuccess else { continue }

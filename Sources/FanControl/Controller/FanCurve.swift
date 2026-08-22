@@ -86,21 +86,28 @@ struct FanCurveConfig: Codable, Identifiable, Equatable {
 
     func interpolate(temperature: Double) -> Double {
         let sorted = points.sorted { $0.temperature < $1.temperature }
-        guard sorted.count >= 2 else { return 100 }
+        guard sorted.count >= 2, temperature.isFinite else { return 100 }
 
         if temperature <= sorted.first!.temperature {
-            return sorted.first!.fanSpeed
+            let speed = sorted.first!.fanSpeed
+            return speed.isFinite ? speed : 100
         }
         if temperature >= sorted.last!.temperature {
-            return sorted.last!.fanSpeed
+            let speed = sorted.last!.fanSpeed
+            return speed.isFinite ? speed : 100
         }
 
         for i in 0..<(sorted.count - 1) {
             let lo = sorted[i]
             let hi = sorted[i + 1]
+            // Duplicate temperature points form a zero-width segment; dividing
+            // by it produces NaN. Skip such segments and let the neighbouring
+            // valid bracket apply.
+            guard hi.temperature > lo.temperature else { continue }
             if temperature >= lo.temperature && temperature <= hi.temperature {
                 let ratio = (temperature - lo.temperature) / (hi.temperature - lo.temperature)
-                return lo.fanSpeed + ratio * (hi.fanSpeed - lo.fanSpeed)
+                let speed = lo.fanSpeed + ratio * (hi.fanSpeed - lo.fanSpeed)
+                return speed.isFinite ? speed : 100
             }
         }
         return 100

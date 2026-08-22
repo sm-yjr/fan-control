@@ -46,11 +46,14 @@ final class FanController {
     private var lastWriteAt: [Int: Date] = [:]
     private var fanWriteInFlight: Set<Int> = []
     private var pendingTargetRPM: [Int: Int] = [:]
+    private var modeWriteInFlight: Set<Int> = []
+    private var writeGeneration: [Int: Int] = [:]
     private var fanOffEnteredAt: [Int: Date] = [:]
     private var fanStartedAt: [Int: Date] = [:]
     private var lastModeReconcileAt: [Int: Date] = [:]
     private var rpmMismatchStartedAt: [Int: Date] = [:]
     private var lastRPMReconcileAt: [Int: Date] = [:]
+    private var lastAutomaticHandBackAt: [Int: Date] = [:]
     private var manualWriteTimers: [Int: Timer] = [:]
     private var configSaveTimer: Timer?
     private var needsConfigMigrationWrite = false
@@ -65,6 +68,7 @@ final class FanController {
     private let minModeReconcileInterval: TimeInterval = 30
     private let minRPMMismatchDuration: TimeInterval = 10
     private let minRPMReconcileInterval: TimeInterval = 15
+    private let minAutomaticHandBackInterval: TimeInterval = 15
     private let maxRampUpRPMPerSecond: Double = 350
     private let maxRampDownRPMPerSecond: Double = 250
     private let inputDirectionDeadband: Double = 0.5
@@ -98,39 +102,64 @@ final class FanController {
         handleSensorUpdate()
     }
 
-    func stop(completion: (() -> Void)? = nil) {
+    /// Cancels pending work and marks the controller inactive. Must be called
+    /// on the main thread because it invalidates timers and mutates observable
+    /// state. Returns the fan ids that still need a hand-back to the system.
+    func prepareForHandBack() -> [Int] {
         flushPendingConfigSave()
+        guard isActive else { return [] }
         isActive = false
-        let states = fanStates
+        let fanIds = fanStates.map(\.fanId)
         cancelAllManualWrites()
+        for fanId in fanIds {
+            writeGeneration[fanId, default: 0] += 1
+        }
         fanWriteInFlight.removeAll()
         pendingTargetRPM.removeAll()
+        modeWriteInFlight.removeAll()
         fanOffEnteredAt.removeAll()
         fanStartedAt.removeAll()
         lastModeReconcileAt.removeAll()
         rpmMismatchStartedAt.removeAll()
         lastRPMReconcileAt.removeAll()
+        lastAutomaticHandBackAt.removeAll()
+        return fanIds
+    }
 
-        let group = DispatchGroup()
-        for state in states {
-            group.enter()
-            FanControlWriter.setFanMode(state.fanId, mode: .automatic) {
-                group.leave()
+    /// Blocks the calling thread until every fan has been handed back to
+    /// system control or the timeout expires. Safe to call while the main
+    /// thread is blocked (system-initiated termination): completions are
+    /// delivered on the waiter's own queue, so a normal completion returns
+    /// immediately and only a real stall hits the timeout.
+    func handBackFans(_ fanIds: [Int], timeout: TimeInterval) {
+        let waiter = FanHandBackWaiter()
+        for fanId in fanIds {
+            waiter.enter()
+            FanControlWriter.setFanMode(
+                fanId,
+                mode: .automatic,
+                completionQueue: waiter.completionQueue
+            ) { ok in
+                debugLog("[FanControl] handBack fan=\(fanId) mode=automatic ok=\(ok)")
+                waiter.leave()
             }
         }
-        group.enter()
-        FanControlWriter.resetAll {
-            group.leave()
+        waiter.enter()
+        FanControlWriter.resetAll(completionQueue: waiter.completionQueue) { ok in
+            debugLog("[FanControl] handBack resetAll ok=\(ok)")
+            waiter.leave()
         }
 
-        DispatchQueue.global(qos: .utility).async {
-            _ = group.wait(timeout: .now() + 3)
-            for state in states {
-                debugLog("[FanControl] stop reset fan=\(state.fanId)")
-            }
-            if let completion {
-                DispatchQueue.main.async { completion() }
-            }
+        let completed = waiter.waitForCompletion(timeout: timeout)
+        if completed {
+            debugLog("[FanControl] handBack complete fans=\(fanIds.count)")
+        } else {
+            // Never claim the reset landed: on timeout some fans may still
+            // be forced at their last app-set speed.
+            debugLog(
+                "[FanControl] handBack timedOut limit=\(String(format: "%.1f", timeout))s "
+                    + "fans=\(fanIds.count) fansMayStillBeForced=true"
+            )
         }
     }
 
@@ -138,6 +167,11 @@ final class FanController {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
         let oldMode = fanStates[idx].mode
         fanStates[idx].mode = mode
+        // A mode transition invalidates every write scheduled under the old
+        // mode: the completion of an in-flight write must not flush a stale
+        // pending RPM and re-lock the hardware into forced mode.
+        writeGeneration[fanId, default: 0] += 1
+        pendingTargetRPM[fanId] = nil
         debugLog("[FanControl] setMode fan=\(fanId) mode=\(mode)")
 
         switch mode {
@@ -163,6 +197,8 @@ final class FanController {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
         let sourceChanged = fanStates[idx].curveConfig?.sensorKey != config.sensorKey
         cancelManualWrite(forFan: fanId)
+        writeGeneration[fanId, default: 0] += 1
+        pendingTargetRPM[fanId] = nil
         fanStates[idx].curveConfig = config
         fanStates[idx].mode = .curve(configId: config.id)
         if sourceChanged {
@@ -176,6 +212,11 @@ final class FanController {
     func resetCurve(forFan fanId: Int) {
         guard let idx = fanStates.firstIndex(where: { $0.fanId == fanId }) else { return }
         cancelManualWrite(forFan: fanId)
+        // Same invariant as setMode/setCurveConfig: a mode-level change must
+        // invalidate in-flight completions so an old manual write cannot
+        // flush a stale RPM afterwards.
+        writeGeneration[fanId, default: 0] += 1
+        pendingTargetRPM[fanId] = nil
         let sensorKey = fanStates[idx].curveConfig?.sensorKey ?? defaultSensorKey
         let config = FanCurveConfig.defaultCurve(sensorKey: sensorKey)
         fanStates[idx].curveConfig = config
@@ -193,24 +234,38 @@ final class FanController {
         handleSensorUpdate()
     }
 
-    func prepareForSleep() {
+    /// Clears in-flight controller state before sleep and returns the fan
+    /// ids that need a real hand-back to system control. Callers must not
+    /// rely on the hardware resetting fan mode by itself during sleep.
+    func prepareForSleep() -> [Int] {
         debugLog("[FanControl] prepareForSleep")
         cancelAllManualWrites()
+        let fanIds = fanStates.map(\.fanId)
+        for fanId in fanIds {
+            writeGeneration[fanId, default: 0] += 1
+        }
         fanWriteInFlight.removeAll()
         pendingTargetRPM.removeAll()
+        modeWriteInFlight.removeAll()
+        return fanIds
     }
 
     func reapplyConfiguredModes(reason: String) {
         guard isActive else { return }
         debugLog("[FanControl] reapplyConfiguredModes reason=\(reason) fans=\(fanStates.count)")
         cancelAllManualWrites()
+        for state in fanStates {
+            writeGeneration[state.fanId, default: 0] += 1
+        }
         fanWriteInFlight.removeAll()
         pendingTargetRPM.removeAll()
+        modeWriteInFlight.removeAll()
         lastTargetRPM.removeAll()
         lastWriteAt.removeAll()
         lastModeReconcileAt.removeAll()
         rpmMismatchStartedAt.removeAll()
         lastRPMReconcileAt.removeAll()
+        lastAutomaticHandBackAt.removeAll()
 
         syncFans(sensorManager.fans)
 
@@ -218,7 +273,7 @@ final class FanController {
             switch state.mode {
             case .automatic:
                 debugLog("[FanControl] reapply fan=\(state.fanId) mode=automatic")
-                FanControlWriter.setFanMode(state.fanId, mode: .automatic)
+                setAutomatic(fanId: state.fanId)
             case .manual(let rpm):
                 debugLog("[FanControl] reapply fan=\(state.fanId) mode=manual rpm=\(rpm)")
                 fanOffEnteredAt[state.fanId] = nil
@@ -260,6 +315,16 @@ final class FanController {
 
             switch fanStates[i].mode {
             case .automatic:
+                // The app believes this fan is system-controlled; verify the
+                // hardware agrees. A fan still forced after a failed or lost
+                // automatic write must be handed back at a limited rate
+                // instead of being skipped forever.
+                if fan.mode == .forced,
+                   !modeWriteInFlight.contains(fanId),
+                   shouldRetryAutomaticHandBack(fanId: fanId) {
+                    debugLog("[FanControl] reconcileAutomatic fan=\(fanId) observed=forced retrying hand-back")
+                    setAutomatic(fanId: fanId)
+                }
                 continue
             case .manual(let rpm):
                 let shouldForceRPM = shouldForceRPMReconcile(fanId: fanId, fan: fan, desiredRPM: rpm)
@@ -269,9 +334,23 @@ final class FanController {
                 }
                 continue
             case .curve(let configId):
-                guard let config = fanStates[i].curveConfig, config.id == configId else { continue }
+                guard let config = fanStates[i].curveConfig, config.id == configId else {
+                    // Corrupt or missing curve config: silently skipping
+                    // forever could leave the hardware forced at a stale
+                    // target. Repair the stored mode and hand the fan back
+                    // to system control at a limited rate.
+                    debugLog("[FanControl] curveConfigInvalid fan=\(fanId) reverting to automatic")
+                    fanStates[i].mode = .automatic
+                    saveConfig()
+                    if !modeWriteInFlight.contains(fanId),
+                       shouldRetryAutomaticHandBack(fanId: fanId) {
+                        setAutomatic(fanId: fanId)
+                    }
+                    continue
+                }
 
                 guard let controlInput = sensorManager.curveInputValue(for: config.sensorKey) else {
+                    handleMissingCurveInput(fanId: fanId, fan: fan)
                     continue
                 }
 
@@ -325,7 +404,27 @@ final class FanController {
         lastModeReconcileAt[fanId] = nil
         rpmMismatchStartedAt[fanId] = nil
         lastRPMReconcileAt[fanId] = nil
-        FanControlWriter.setFanMode(fanId, mode: .automatic)
+        pendingTargetRPM[fanId] = nil
+        modeWriteInFlight.insert(fanId)
+        FanControlWriter.setFanMode(fanId, mode: .automatic) { [weak self] ok in
+            guard let self else { return }
+            self.modeWriteInFlight.remove(fanId)
+            if !ok {
+                // Surface the failure; the polling loop retries the hand-back
+                // at a limited rate while the hardware still reads forced.
+                debugLog("[FanControl] setAutomatic fan=\(fanId) result=failed")
+            }
+        }
+    }
+
+    private func shouldRetryAutomaticHandBack(fanId: Int) -> Bool {
+        let now = Date()
+        if let last = lastAutomaticHandBackAt[fanId],
+           now.timeIntervalSince(last) < minAutomaticHandBackInterval {
+            return false
+        }
+        lastAutomaticHandBackAt[fanId] = now
+        return true
     }
 
     private func fanStatesApplyCurveReset(fanId: Int) {
@@ -338,6 +437,41 @@ final class FanController {
         lastModeReconcileAt[fanId] = nil
         rpmMismatchStartedAt[fanId] = nil
         lastRPMReconcileAt[fanId] = nil
+    }
+
+    /// Fail-safe for a curve whose configured input currently has no value.
+    ///
+    /// Skipping the fan entirely would leave it forced at its last written
+    /// target with no safety floors applied. Instead: under critical/serious
+    /// thermal pressure or known extreme silicon temperature the fan is
+    /// driven to a safe speed immediately; for an ordinary transient gap the
+    /// last written target is held unchanged, which keeps cooling continuous
+    /// without oscillating on fabricated data.
+    private func handleMissingCurveInput(fanId: Int, fan: FanInfo) {
+        guard let failSafePercent = CurveInputFailSafe.speedPercentWhenInputMissing(
+            pressure: sensorManager.systemThermalPressure,
+            hottestSiliconTemperature: sensorManager.hottestSiliconTemperature
+        ) else {
+            debugLog("[FanControl] curveInputMissing fan=\(fanId) action=holdLastTarget")
+            return
+        }
+
+        debugLog(
+            "[FanControl] curveInputMissing fan=\(fanId) action=failSafe percent=\(Int(failSafePercent)) "
+                + "pressure=\(sensorManager.systemThermalPressure.displayName)"
+        )
+        let targetRPM = curveTargetRPM(fan: fan, speedPercent: failSafePercent)
+        // Do not force-rewrite the identical fail-safe target on every poll
+        // cycle: with force off, the normal throttle suppresses the
+        // duplicate, while a failed write still rolls the target back and
+        // gets retried on the next cycle.
+        let alreadyCommanded = lastTargetRPM[fanId] == targetRPM
+        scheduleFanSpeedWrite(
+            fanId: fanId,
+            rpm: targetRPM,
+            force: !alreadyCommanded,
+            bypassRampLimit: true
+        )
     }
 
     private func applyCurveTarget(
@@ -409,6 +543,15 @@ final class FanController {
         allowBelowMin: Bool = false,
         bypassRampLimit: Bool = false
     ) {
+        // A fan whose maximum speed could not be established has no safe
+        // target to command; refuse writes instead of fabricating a bound.
+        guard let fan = sensorManager.fans.first(where: { $0.id == fanId }),
+              fan.maxSpeedKnown else {
+            pendingTargetRPM[fanId] = nil
+            debugLog("[FanControl] skipWrite fan=\(fanId) reason=unknownSpeedLimits")
+            return
+        }
+
         let targetRPM = clampRPM(rpm, forFan: fanId, allowBelowMin: allowBelowMin)
         let clampedRPM = applyRampLimit(
             fanId: fanId,
@@ -428,17 +571,44 @@ final class FanController {
         }
 
         let previousTargetRPM = lastTargetRPM[fanId]
+        let previousFanOffEnteredAt = fanOffEnteredAt[fanId]
+        let previousFanStartedAt = fanStartedAt[fanId]
+        let generation = writeGeneration[fanId, default: 0]
         fanWriteInFlight.insert(fanId)
         lastTargetRPM[fanId] = clampedRPM
         lastWriteAt[fanId] = Date()
         recordFanTransition(fanId: fanId, previousRPM: previousTargetRPM, rpm: clampedRPM)
         debugLog("[FanControl] scheduleWrite fan=\(fanId) rpm=\(clampedRPM) force=\(force)")
 
-        FanControlWriter.setFanRPM(fanId, rpm: clampedRPM) { [weak self] in
+        FanControlWriter.setFanRPM(fanId, rpm: clampedRPM) { [weak self] ok in
             guard let self else { return }
             self.fanWriteInFlight.remove(fanId)
+
+            // A mode transition since this write was scheduled invalidates
+            // it: flushing the pending RPM now could re-lock a fan the user
+            // just returned to system control.
+            guard self.writeGeneration[fanId, default: 0] == generation else {
+                self.pendingTargetRPM[fanId] = nil
+                debugLog("[FanControl] discardStaleWrite fan=\(fanId) rpm=\(clampedRPM)")
+                return
+            }
+
+            if !ok {
+                // Do not keep a failed write as committed state: restoring
+                // the previous target lets the next poll recompute and retry
+                // instead of being suppressed as a duplicate. The fan-off
+                // bookkeeping must roll back too — a failed 0 RPM write did
+                // not stop the fan and must not arm the fan-off residence.
+                self.lastTargetRPM[fanId] = previousTargetRPM
+                self.fanOffEnteredAt[fanId] = previousFanOffEnteredAt
+                self.fanStartedAt[fanId] = previousFanStartedAt
+                debugLog("[FanControl] writeFailed fan=\(fanId) rpm=\(clampedRPM)")
+            }
+
             if let pending = self.pendingTargetRPM.removeValue(forKey: fanId) {
-                self.scheduleFanSpeedWrite(fanId: fanId, rpm: pending, allowBelowMin: pending == 0)
+                // force:true so a queued adjustment smaller than the throttle
+                // delta is actually delivered instead of being dropped.
+                self.scheduleFanSpeedWrite(fanId: fanId, rpm: pending, force: true, allowBelowMin: pending == 0)
             }
         }
     }

@@ -62,6 +62,10 @@ final class AppState {
     private var isPopoverPresented = false
     private var powerNotificationObservers: [NSObjectProtocol] = []
     private var powerEventObserver: PowerEventObserver?
+    private var terminationRequested = false
+    private var fanHandBackDone = false
+    private var signalSources: [DispatchSourceSignal] = []
+    private var lastSleepHandBackUptime: TimeInterval?
 
     init() {
         let sm = SensorManager()
@@ -170,7 +174,7 @@ final class AppState {
             queue: .main
         ) { [weak self] _ in
             debugLog("[FanControl] workspaceWillSleep")
-            self?.fanController.prepareForSleep()
+            self?.performSleepHandBackIfNeeded()
         }
 
         let didWake = notificationCenter.addObserver(
@@ -196,15 +200,20 @@ final class AppState {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            // Display-only sleep: the system keeps running, so clear pending
+            // controller state without handing the fans back.
             debugLog("[FanControl] workspaceScreensDidSleep")
-            self?.fanController.prepareForSleep()
+            _ = self?.fanController.prepareForSleep()
         }
 
         powerNotificationObservers = [willSleep, didWake, screensDidWake, screensDidSleep]
 
+        // The IOKit callback invokes IOAllowPowerChange only after this
+        // closure returns, so the synchronous hand-back is guaranteed to
+        // finish (or time out) before the system is allowed to sleep.
         let powerObserver = PowerEventObserver(
             onWillSleep: { [weak self] in
-                self?.fanController.prepareForSleep()
+                self?.performSleepHandBackIfNeeded()
             },
             onDidWake: { [weak self] in
                 self?.handleWake()
@@ -216,6 +225,8 @@ final class AppState {
 
     private func handleWake() {
         debugLog("[FanControl] handleWake")
+        // A new sleep cycle may begin; clear the will-sleep dedup marker.
+        lastSleepHandBackUptime = nil
         sensorManager.updateReadings()
         reapplyAfterWake(delay: 0.5)
         reapplyAfterWake(delay: 2.0)
@@ -250,60 +261,115 @@ final class AppState {
         }
     }
 
+    /// Real system sleep: hand the fans back to system control and finish
+    /// that hand-back BEFORE the caller acknowledges the sleep.
+    ///
+    /// Runs synchronously on the will-sleep path (bounded by
+    /// `SleepHandBackPolicy.timeout`): the IOKit callback only calls
+    /// `IOAllowPowerChange` after this returns, and the NSWorkspace handler
+    /// gets the same guarantee. Waiting here is safe even on the main
+    /// thread because write completions are delivered on the hand-back
+    /// waiter's own queue, never on main. A per-sleep-cycle dedup window
+    /// keeps the two will-sleep sources from handing back twice.
+    private func performSleepHandBackIfNeeded() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard SleepHandBackPolicy.shouldPerformHandBack(
+            now: now,
+            lastHandBackAt: lastSleepHandBackUptime
+        ) else {
+            debugLog("[FanControl] sleepHandBack skipped reason=dedup")
+            return
+        }
+        lastSleepHandBackUptime = now
+
+        let fanIds = fanController.prepareForSleep()
+        guard SleepHandBackPolicy.shouldHandBack(
+            canWriteFans: canWriteFans,
+            fanCount: fanIds.count
+        ) else { return }
+
+        debugLog("[FanControl] sleepHandBack start fans=\(fanIds.count)")
+        fanController.handBackFans(fanIds, timeout: SleepHandBackPolicy.timeout)
+        debugLog("[FanControl] sleepHandBack finished")
+    }
+
     private func setupCleanup() {
-        signal(SIGINT) { _ in
-            if geteuid() == 0 {
-                _ = SMCKit.shared.resetFanControl()
-            } else {
-                _ = FanControlHelperClient.resetAll()
-            }
-            exit(0)
-        }
-        signal(SIGTERM) { _ in
-            if geteuid() == 0 {
-                _ = SMCKit.shared.resetFanControl()
-            } else {
-                _ = FanControlHelperClient.resetAll()
-            }
-            exit(0)
-        }
+        installSignalSources()
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.sensorManager.stopPolling()
-            self?.batteryMonitor.stopPolling()
-            if self?.canWriteFans == true {
-                self?.fanController.stop()
-            }
-            if let observers = self?.powerNotificationObservers {
-                for observer in observers {
-                    NSWorkspace.shared.notificationCenter.removeObserver(observer)
-                }
-            }
-            self?.powerEventObserver?.stop()
+            self?.prepareForTermination()
         }
     }
-}
 
-final class AppInstanceLock {
-    static let shared = AppInstanceLock()
+    /// Signals must not run Swift runtime, SMC, socket, or logging code from
+    /// the handler itself. Ignore the default disposition and move the
+    /// cleanup onto the main queue through a dispatch source.
+    private func installSignalSources() {
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        for signalNumber in [SIGINT, SIGTERM] {
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+            source.setEventHandler { [weak self] in
+                self?.requestTermination()
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
 
-    private var fd: Int32 = -1
+    /// User-initiated quit (Quit button, Ctrl-C, SIGTERM): hand the fans back
+    /// on a background queue with a bounded wait, then terminate. The
+    /// willTerminate observer sees `fanHandBackDone` and does not repeat the
+    /// work.
+    func requestTermination() {
+        guard !terminationRequested else { return }
+        terminationRequested = true
+        debugLog("[FanControl] terminationRequested canWriteFans=\(canWriteFans)")
 
-    func acquire() -> Bool {
-        if fd >= 0 { return true }
-
-        let path = "/tmp/com.local.fan-control.lock"
-        let opened = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        guard opened >= 0 else { return true }
-
-        if flock(opened, LOCK_EX | LOCK_NB) == 0 {
-            fd = opened
-            return true
+        guard canWriteFans else {
+            NSApplication.shared.terminate(nil)
+            return
         }
 
-        close(opened)
-        return false
+        let fanIds = fanController.prepareForHandBack()
+        let controller = fanController
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            controller.handBackFans(fanIds, timeout: 5)
+            DispatchQueue.main.async {
+                self?.fanHandBackDone = true
+                NSApplication.shared.terminate(nil)
+            }
+        }
+    }
+
+    /// Runs from willTerminate on the main thread. Covers system-initiated
+    /// termination (log out, restart, forced quit) where requestTermination
+    /// never ran. The wait is bounded so a stalled helper cannot hang
+    /// termination indefinitely.
+    private func prepareForTermination() {
+        sensorManager.stopPolling()
+        batteryMonitor.stopPolling()
+        for observer in powerNotificationObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        powerNotificationObservers = []
+        powerEventObserver?.stop()
+
+        guard !fanHandBackDone, canWriteFans else {
+            fanHandBackDone = true
+            return
+        }
+
+        let fanIds = fanController.prepareForHandBack()
+        let controller = fanController
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            controller.handBackFans(fanIds, timeout: 4)
+            finished.signal()
+        }
+        _ = finished.wait(timeout: .now() + 5)
+        fanHandBackDone = true
     }
 }

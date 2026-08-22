@@ -21,6 +21,7 @@ swift build
 ./script/test_thermal_model.sh
 ./script/test_status_item_presentation.sh
 ./script/test_app_launch_mode.sh
+./script/test_app_instance_lock.sh
 ./script/test_update_runtime.sh
 ./script/package_app.sh
 ./script/build_and_run.sh --verify

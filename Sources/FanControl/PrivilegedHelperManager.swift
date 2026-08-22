@@ -22,9 +22,9 @@ enum PrivilegedHelperManager {
             <key>KeepAlive</key>
             <true/>
             <key>StandardOutPath</key>
-            <string>/tmp/fan-control-helper.log</string>
+            <string>\(xmlEscape(FanHelperConstants.helperLogPath))</string>
             <key>StandardErrorPath</key>
-            <string>/tmp/fan-control-helper.log</string>
+            <string>\(xmlEscape(FanHelperConstants.helperLogPath))</string>
         </dict>
         </plist>
         """
@@ -47,23 +47,38 @@ enum PrivilegedHelperManager {
         }
 
         let plist = makeLaunchDaemonPlist()
-        let plistURL = URL(fileURLWithPath: "/tmp/\(FanHelperConstants.label).plist")
 
-        do {
-            try plist.write(to: plistURL, atomically: true, encoding: .utf8)
-        } catch {
-            return FanHelperResponse(ok: false, message: error.localizedDescription, isRoot: false)
-        }
+        // The daemon plist is written by the privileged script itself through
+        // a heredoc, directly into /Library/LaunchDaemons. Nothing security
+        // relevant is staged in world-writable /tmp anymore, and the root
+        // script never follows an attacker-planted file: both target
+        // directories are root-owned, so non-root accounts cannot plant
+        // symlinks inside them.
+        let plistMarker = "FAN_CONTROL_HELPER_PLIST"
+        let installPlist =
+            "/bin/cat > \(shellQuote(FanHelperConstants.launchDaemonPath)) <<'\(plistMarker)'\n"
+            + "\(plist)\n"
+            + "\(plistMarker)\n"
+            + "/usr/sbin/chown root:wheel \(shellQuote(FanHelperConstants.launchDaemonPath))\n"
+            + "/bin/chmod 644 \(shellQuote(FanHelperConstants.launchDaemonPath))"
 
         let stagedHelperPath = "\(FanHelperConstants.helperToolPath).installing"
         let script = ([
             "set -e",
             "/usr/bin/install -d -m 755 -o root -g wheel /Library/PrivilegedHelperTools",
+            // Root-owned log location: launchd opens StandardOutPath as root
+            // on every daemon start, so it must be a regular file in a
+            // directory only root can write.
+            "/usr/bin/install -d -m 755 -o root -g wheel \(shellQuote(FanHelperConstants.helperLogDirectory))",
+            "/bin/rm -f \(shellQuote(FanHelperConstants.helperLogPath))",
+            // Remove the predictable /tmp log left behind by older installs.
+            "/bin/rm -f /tmp/fan-control-helper.log",
+            "/usr/bin/install -m 640 -o root -g wheel /dev/null \(shellQuote(FanHelperConstants.helperLogPath))",
             "/bin/rm -f \(shellQuote(stagedHelperPath))",
             "/usr/bin/install -m 755 -o root -g wheel \(shellQuote(bundledHelperPath)) \(shellQuote(stagedHelperPath))",
             "/usr/bin/codesign --verify --strict \(shellQuote(stagedHelperPath))",
             "/usr/bin/xattr -d com.apple.quarantine \(shellQuote(stagedHelperPath)) >/dev/null 2>&1 || true",
-            "/usr/bin/install -m 644 -o root -g wheel \(shellQuote(plistURL.path)) \(shellQuote(FanHelperConstants.launchDaemonPath))",
+            installPlist,
             "/bin/launchctl bootout system \(shellQuote(FanHelperConstants.launchDaemonPath)) >/dev/null 2>&1 || true",
             "/bin/mv -f \(shellQuote(stagedHelperPath)) \(shellQuote(FanHelperConstants.helperToolPath))",
             "/bin/rm -f \(shellQuote(FanHelperConstants.socketPath))",

@@ -21,6 +21,11 @@ struct FanInfo: Identifiable {
     var name: String
     var minSpeed: Double
     var maxSpeed: Double
+    /// False when discovery could not establish a valid maximum speed.
+    /// The speed range stays legal for display, but manual control and RPM
+    /// writes must be disabled: without a known upper bound there is no safe
+    /// target to command.
+    var maxSpeedKnown: Bool = true
     var currentSpeed: Double = 0
     var mode: FanMode = .automatic
 }
@@ -291,25 +296,38 @@ final class SensorManager {
         var fans: [FanInfo] = []
         var temperatures: [TemperatureSensor] = []
 
-        // Discover fans
-        if let count = smc.getValue("FNum") {
-            for i in 0..<Int(count) {
+        // Discover fans. The count goes through the shared FanIDBounds
+        // validation: a NaN/Inf/fractional/huge FNum must fail closed to
+        // "no controllable fans" instead of trapping Int() or interpolating
+        // keys that cannot exist.
+        if let count = FanIDBounds.validFanCount(smc.getValue("FNum")) {
+            for i in 0..<count {
                 var name = smc.getStringValue("F\(i)ID")
                 if name == nil && Int(count) == 2 {
                     name = i == 0 ? "Left Fan" : "Right Fan"
                 }
 
                 let modeKey = smc.fanModeKey(i)
-                let modeRaw = Int(smc.getValue(modeKey) ?? 0)
+                let modeValue = smc.getValue(modeKey) ?? 0
+                let modeRaw = modeValue.isFinite ? Int(modeValue) : 0
                 let mode: FanMode = modeRaw == 1 ? .forced : .automatic
+
+                // A transient SMC failure during this one-shot discovery must
+                // not leave an inverted or non-finite range behind: UI
+                // controls build ClosedRange values from it.
+                let speedRange = FanSpeedRange.validated(
+                    minSpeed: smc.getValue("F\(i)Mn"),
+                    maxSpeed: smc.getValue("F\(i)Mx")
+                )
 
                 fans.append(FanInfo(
                     id: i,
                     key: "F\(i)Ac",
                     name: name ?? "Fan #\(i)",
-                    minSpeed: smc.getValue("F\(i)Mn") ?? 0,
-                    maxSpeed: smc.getValue("F\(i)Mx") ?? 1,
-                    currentSpeed: smc.getValue("F\(i)Ac") ?? 0,
+                    minSpeed: speedRange.minSpeed,
+                    maxSpeed: speedRange.maxSpeed,
+                    maxSpeedKnown: speedRange.isControllable,
+                    currentSpeed: FanSpeedRange.sanitizedSpeedReading(smc.getValue("F\(i)Ac")),
                     mode: mode
                 ))
             }
@@ -356,9 +374,12 @@ final class SensorManager {
         var temperatures = temperatureInputs
 
         for i in fans.indices {
-            fans[i].currentSpeed = smc.getValue(fans[i].key) ?? 0
+            // Normalize corrupt readings (NaN/Inf/negative) at the snapshot
+            // boundary; downstream code performs Int() conversions on this.
+            fans[i].currentSpeed = FanSpeedRange.sanitizedSpeedReading(smc.getValue(fans[i].key))
             let modeKey = smc.fanModeKey(fans[i].id)
-            let modeRaw = Int(smc.getValue(modeKey) ?? 0)
+            let modeValue = smc.getValue(modeKey) ?? 0
+            let modeRaw = modeValue.isFinite ? Int(modeValue) : 0
             fans[i].mode = modeRaw == 1 ? .forced : .automatic
         }
 

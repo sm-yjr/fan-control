@@ -43,6 +43,34 @@ enum SystemThermalPressure: Int, Codable, Comparable {
     }
 }
 
+/// Decides what a curve-controlled fan must do while its configured input
+/// has no usable value.
+///
+/// A nil result means "hold the last written target": for an ordinary
+/// transient gap that keeps cooling continuous without fabricating data. A
+/// non-nil result is a fail-safe speed percent that must be applied
+/// immediately because the system is already hot.
+enum CurveInputFailSafe {
+    static func speedPercentWhenInputMissing(
+        pressure: SystemThermalPressure,
+        hottestSiliconTemperature: Double
+    ) -> Double? {
+        switch pressure {
+        case .critical:
+            return 100
+        case .serious:
+            return 70
+        case .nominal, .fair:
+            break
+        }
+
+        if hottestSiliconTemperature.isFinite, hottestSiliconTemperature >= 96 {
+            return 80
+        }
+        return nil
+    }
+}
+
 struct ThermalDemandReading: Equatable {
     var demandPercent: Double = 0
     var sustainedSiliconTemperature: Double = 0
