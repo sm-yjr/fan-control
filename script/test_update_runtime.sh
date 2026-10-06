@@ -22,6 +22,19 @@ STAGED_HELPER="$OUTPUT_DIR/com.local.fan-control.helper"
 
 /usr/bin/install -m 755 "$HELPER" "$STAGED_HELPER"
 codesign --verify --strict "$STAGED_HELPER"
+if otool -L "$STAGED_HELPER" | grep -Eq 'Sparkle\.framework|@rpath/|@executable_path/|@loader_path/'; then
+  echo "Standalone helper depends on an app-bundled library." >&2
+  exit 1
+fi
+PACKAGE_JSON="$OUTPUT_DIR/package-info.json"
+PACKAGE_INFO="$OUTPUT_DIR/package-info.plist"
+"$APP/Contents/MacOS/FanControl" --package-info > "$PACKAGE_JSON"
+/usr/bin/plutil -convert xml1 -o "$PACKAGE_INFO" "$PACKAGE_JSON"
+/usr/bin/plutil -lint "$PACKAGE_INFO"
+[[ "$(/usr/bin/plutil -extract app.version raw "$PACKAGE_INFO")" == "0.0.3" ]]
+[[ "$(/usr/bin/plutil -extract app.build raw "$PACKAGE_INFO")" == "3" ]]
+[[ "$(/usr/bin/plutil -extract helper_protocol raw "$PACKAGE_INFO")" == "8" ]]
+[[ "$(/usr/bin/plutil -extract architecture raw "$PACKAGE_INFO")" == "aarch64" ]]
 
 set +e
 RUNTIME_OUTPUT="$(

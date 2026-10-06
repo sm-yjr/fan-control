@@ -13,11 +13,23 @@ jobs:
     runs-on: macos-15
     env:
       NOTARY_PROFILE: fan-control-notary
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Prepare Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+
+      - name: Check Rust formatting, lints and tests
+        run: ./script/test_rust.sh
+
+      - name: Verify packaged Sparkle runtime
+        run: ./script/test_update_runtime.sh
 
       - name: Validate release tag and secrets
         env:
@@ -119,6 +131,12 @@ jobs:
             CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             ./script/package_app.sh
           codesign --verify --deep --strict --verbose=2 dist/FanControl.app
+          HELPER="dist/FanControl.app/Contents/Library/LaunchServices/com.local.fan-control.helper"
+          codesign --verify --strict --verbose=2 "$HELPER"
+          if otool -L "$HELPER" | grep -Eq 'Sparkle\.framework|@rpath/|@executable_path/|@loader_path/'; then
+            echo "The privileged helper must not depend on app-bundled dynamic libraries." >&2
+            exit 1
+          fi
 
       - name: Notarize app
         run: |

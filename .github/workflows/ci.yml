@@ -13,30 +13,29 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        runner: [macos-14, macos-15]
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Build Swift package
-        run: swift build
+      - name: Prepare Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
 
-      - name: Verify FanUI foundation and components
-        run: ./script/test_fan_ui.sh
+      - name: Check Rust formatting, lints and tests
+        run: ./script/test_rust.sh
 
-      - name: Verify thermal model
-        run: ./script/test_thermal_model.sh
-
-      - name: Verify status item presentation
-        run: ./script/test_status_item_presentation.sh
-
-      - name: Verify app launch mode
-        run: ./script/test_app_launch_mode.sh
-
-      - name: Verify app instance lock
-        run: ./script/test_app_instance_lock.sh
+      - name: Build Rust app
+        run: cargo build --locked --package fan-app --bin FanControl
 
       - name: Verify packaged Sparkle runtime
         run: ./script/test_update_runtime.sh
@@ -71,10 +70,18 @@ jobs:
             exit 1
           fi
 
-          if otool -L "$HELPER" | grep -q "Sparkle.framework"; then
-            echo "The privileged helper executable must not link Sparkle.framework." >&2
+          if otool -L "$HELPER" | grep -Eq 'Sparkle\.framework|@rpath/|@executable_path/|@loader_path/'; then
+            echo "The privileged helper must not depend on app-bundled dynamic libraries." >&2
             exit 1
           fi
+
+      - name: Initialize native windows in isolated demo mode
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          APP_BINARY="dist/FanControl.app/Contents/MacOS/FanControl"
+          FAN_CONTROL_DEMO_LANGUAGE=zh-Hans "$APP_BINARY" --ui-smoke
+          FAN_CONTROL_DEMO_LANGUAGE=en "$APP_BINARY" --ui-smoke
 
       - name: Verify DMG packaging
         run: |
@@ -84,3 +91,21 @@ jobs:
             dist/FanControl-ci.dmg \
             "Fan Control CI"
           hdiutil verify dist/FanControl-ci.dmg
+
+  msrv:
+    name: Rust 1.85.1 minimum toolchain
+    runs-on: macos-14
+    timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare minimum Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal
+
+      - name: Test workspace with minimum Rust toolchain
+        run: cargo +1.85.1 test --locked --workspace
