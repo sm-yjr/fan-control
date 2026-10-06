@@ -47,7 +47,7 @@ fn main() {
         },
         LaunchMode::PackageInfo=>println!("{}",serde_json::to_string(&serde_json::json!({"app":app_version::current(),"helper_protocol":fan_platform::PROTOCOL_VERSION,"architecture":std::env::consts::ARCH})).expect("serialize package metadata")),
         LaunchMode::Gui{demo}=>{
-            unsafe {libc::signal(libc::SIGTERM,terminate_signal as libc::sighandler_t);libc::signal(libc::SIGINT,terminate_signal as libc::sighandler_t);}
+            unsafe {libc::signal(libc::SIGTERM,terminate_signal as *const () as libc::sighandler_t);libc::signal(libc::SIGINT,terminate_signal as *const () as libc::sighandler_t);}
             let lock_directory=std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/FanControl");
             let _lock=match storage::InstanceLock::acquire(&lock_directory){Ok(lock)=>lock,Err(error)=>{eprintln!("Fan Control is already running, or the session lock cannot be acquired: {error}");return;}};
             ui::run(demo,false);

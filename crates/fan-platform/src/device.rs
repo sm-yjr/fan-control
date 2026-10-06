@@ -37,7 +37,7 @@ fn identity_from_properties(uuid: Option<&str>, model: Option<&str>) -> Option<D
         || !(3..=64).contains(&model.len())
         || !model
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || [b',', b'.', b'-'].contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || b",.-".contains(&byte))
         || !model.bytes().any(|byte| byte.is_ascii_digit())
     {
         return None;

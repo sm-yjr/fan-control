@@ -400,12 +400,10 @@ impl Smc {
     pub fn set_fan_rpm(&mut self, id: i64, rpm: i64) -> Result<u16> {
         let id = self.check_id(id)?;
         let result = self.set_rpm_inner(id, rpm);
-        if result.is_err() {
-            let fallback = self.automatic(id);
-            if let Err(fallback) = fallback {
+        if let Err(error) = &result {
+            if let Err(fallback) = self.automatic(id) {
                 return Err(Error(format!(
-                    "{}; automatic fallback failed: {fallback}",
-                    result.as_ref().unwrap_err()
+                    "{error}; automatic fallback failed: {fallback}"
                 )));
             }
         }

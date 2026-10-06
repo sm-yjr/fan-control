@@ -691,8 +691,8 @@ pub fn run_helper() -> Result<()> {
     }
     SHUTDOWN.store(false, Ordering::SeqCst);
     unsafe {
-        libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
     let socket = Path::new(SOCKET_PATH);
