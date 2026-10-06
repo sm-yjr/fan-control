@@ -22,6 +22,7 @@ secrets.*
 # Local app bundles and build outputs
 /dist/
 /DerivedData/
+/target/
 
 # Xcode user state
 *.xcuserstate

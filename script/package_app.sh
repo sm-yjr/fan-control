@@ -13,7 +13,7 @@ SPARKLE_PUBLIC_KEY="/hvZor9jnQzV8BJYBLdNoyEAps0epZ1MvtMu8wq5ikg="
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-debug}"
-APP_VERSION="${APP_VERSION:-1.0.0}"
+APP_VERSION="${APP_VERSION:-0.2.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
 ARCHITECTURES="${ARCHITECTURES:-}"
@@ -56,11 +56,24 @@ if [[ ! -s "$APP_ICON_SOURCE" ]]; then
   exit 1
 fi
 
-build_arguments=(-c "$BUILD_CONFIGURATION")
-if [[ -n "$ARCHITECTURES" ]]; then
-  for architecture in $ARCHITECTURES; do
-    build_arguments+=(--arch "$architecture")
-  done
+if [[ -n "$ARCHITECTURES" && "$ARCHITECTURES" != "arm64" ]]; then
+  echo "error: only ARCHITECTURES=arm64 is supported" >&2
+  exit 2
+fi
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "error: app packaging requires an Apple Silicon Mac" >&2
+  exit 2
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: Rust with Cargo is required; install the Rust toolchain first" >&2
+  exit 1
+fi
+
+build_arguments=(--locked --package fan-app --bin "$APP_NAME")
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+  build_arguments+=(--release)
 fi
 
 fetch_sparkle() {
@@ -91,12 +104,25 @@ cd "$ROOT_DIR"
 fetch_sparkle
 
 echo "Building $APP_NAME ($BUILD_CONFIGURATION)..."
-swift build "${build_arguments[@]}"
-BUILD_BIN_PATH="$(swift build "${build_arguments[@]}" --show-bin-path)"
-BUILD_BINARY="$BUILD_BIN_PATH/$APP_NAME"
+MACOSX_DEPLOYMENT_TARGET="$MIN_SYSTEM_VERSION" \
+  CARGO_TARGET_DIR="$ROOT_DIR/target" \
+  cargo build "${build_arguments[@]}"
+BUILD_BINARY="$ROOT_DIR/target/$BUILD_CONFIGURATION/$APP_NAME"
 
 if [[ ! -x "$BUILD_BINARY" ]]; then
   echo "error: expected executable was not found at $BUILD_BINARY" >&2
+  exit 1
+fi
+
+if [[ "$(lipo -archs "$BUILD_BINARY")" != "arm64" ]]; then
+  echo "error: the app executable must contain only the arm64 architecture" >&2
+  exit 1
+fi
+
+# The same binary is copied outside the app and launched as --helper. Bundle
+# frameworks must be opened dynamically only in GUI mode.
+if otool -L "$BUILD_BINARY" | grep -Eq 'Sparkle\.framework|@rpath/|@executable_path/|@loader_path/'; then
+  echo "error: the executable must not depend on app-bundled dynamic libraries" >&2
   exit 1
 fi
 
@@ -109,6 +135,16 @@ ditto "$ROOT_DIR/LICENSE" "$APP_RESOURCES/FanControl-LICENSE.txt"
 ditto "$SPARKLE_CACHE_DIR/LICENSE" "$APP_RESOURCES/Sparkle-LICENSE.txt"
 ditto "$APP_ICON_SOURCE" "$APP_RESOURCES/$APP_ICON_NAME"
 chmod +x "$APP_BINARY" "$HELPER_BINARY"
+
+echo "Collecting original Rust dependency licenses..."
+LICENSE_METADATA="$ROOT_DIR/.build/license-metadata.json"
+mkdir -p "$ROOT_DIR/.build"
+cargo metadata --locked --format-version 1 >"$LICENSE_METADATA"
+MACOSX_DEPLOYMENT_TARGET="$MIN_SYSTEM_VERSION" \
+  CARGO_TARGET_DIR="$ROOT_DIR/target" \
+  cargo run --locked --package fan-licenses --bin fan-licenses -- \
+  --metadata "$LICENSE_METADATA" \
+  --output "$APP_RESOURCES/ThirdPartyLicenses"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -123,6 +159,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>Fan Control</string>
   <key>CFBundleDisplayName</key>
   <string>Fan Control</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array><string>en</string><string>zh-Hans</string></array>
   <key>CFBundleIconFile</key>
   <string>$APP_ICON_NAME</string>
   <key>CFBundlePackageType</key>

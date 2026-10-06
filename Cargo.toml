@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/fan-core", "crates/fan-platform", "crates/fan-app", "crates/fan-licenses"]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# macOS 27 rejects misaligned LINKEDIT tables produced by debuginfo stripping,
+# including build-time proc-macro dylibs. Release already emits no debug info.
+# https://github.com/rust-lang/rust/issues/157750
+strip = "none"

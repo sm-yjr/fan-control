@@ -1,0 +1,21 @@
+[package]
+name = "fan-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "FanControl"
+path = "src/main.rs"
+
+[dependencies]
+fan-core = { path = "../fan-core" }
+fan-platform = { path = "../fan-platform" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+block2 = "0.6"

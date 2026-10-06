@@ -3,151 +3,114 @@
 [![CI](https://github.com/sm-yjr/fan-control/actions/workflows/ci.yml/badge.svg)](https://github.com/sm-yjr/fan-control/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-Fan Control 是一个面向 macOS 的菜单栏风扇控制工具。它读取 Apple SMC 传感器，支持系统自动、固定转速和热负荷曲线三种模式。默认曲线根据机身需要排出的持续热量调速，过滤 CPU/GPU 核心的短时温度尖峰；进入睡眠前会把风扇交还系统，唤醒后重新读取 SMC 状态并恢复用户配置。
+Fan Control 是面向 macOS 14+、Apple Silicon 的菜单栏风扇控制工具。项目正在迁移到 Rust：热模型、控制策略、配置、Apple SMC 和 privileged helper 使用 Rust；界面通过 `objc2` 使用 AppKit 原生系统控件。主构建已经切换到 Cargo，旧 Swift 源码暂时保留作为行为和配置兼容性对照，不参与新应用构建，完成迁移验收后再移除。
+
+当前 Rust 版本处于迁移和候选验证阶段。构建成功或自动化测试通过，只证明对应代码与产物检查通过；真实界面、管理员安装、风扇写入、睡眠恢复、公证与实际更新还须逐项验收。本次确定问题与修复见 [独立审查报告](docs/rust-migration-review.md)，进度和发布门槛见 [Rust 产品验收清单](docs/rust-product-acceptance.md)。现有 GitHub Release 可能仍是迁移前版本，下载时以对应 Release 说明为准。
 
 > [!WARNING]
-> 错误的风扇曲线可能导致过热、降频、数据丢失或硬件损坏。请保留温度余量并观察实际温度。软件按 GPL-3.0 的无担保条款提供。
+> 风扇控制会直接修改硬件状态。错误的曲线可能导致过热、降频、数据丢失或硬件损坏。首次使用保持系统自动模式；选择自定义模式时保留温度余量。软件按 GPL-3.0 的无担保条款提供。
 
-## 系统要求
+## 系统与构建要求
 
-当前发布目标是 Apple Silicon Mac，最低系统版本为 macOS 14。源码使用 Swift Package Manager 管理，可以只安装 Command Line Tools 构建，无需完整 Xcode：
+需要 Apple Silicon Mac、macOS 14 或更新系统、Command Line Tools，以及 Rust 1.85+ 的 Cargo、rustfmt 和 Clippy。无需完整 Xcode，也无需 Swift 编译链。先安装 CLT 和 Rust 官方工具链，再检查本机环境：
 
 ```bash
 xcode-select --install
-swift --version
+rustc --version
+cargo --version
+rustup component add rustfmt clippy
 ```
 
-项目内的 `CLTState` 属性包装器替代了依赖完整 Xcode 插件目录的 `SwiftUIMacros.StateMacro`。Sparkle 以固定版本的预编译框架随应用打包，不参与 privileged helper 的动态链接。
+工作区分为四个 crate：
 
-## 安装
+| crate | 职责 |
+| --- | --- |
+| `fan-core` | 与硬件无关的热模型、曲线、安全策略和配置兼容性 |
+| `fan-platform` | Rust IOKit/SMC 访问、本地 Unix socket、helper 安装和控制租约 |
+| `fan-app` | AppKit 菜单栏、原生控件、状态反馈和 Sparkle 运行时加载 |
+| `fan-licenses` | 收集固定依赖的许可证与可校验的随包清单 |
 
-从 [GitHub Releases](https://github.com/sm-yjr/fan-control/releases) 下载最新的 `FanControl-版本号.dmg`，打开磁盘映像并把 `FanControl.app` 拖到 `Applications`。首次修改风扇设置时，应用会请求管理员授权，把 App 内独立签名的 Helper 安装为 launch daemon：
+主可执行文件仍名为 `FanControl`，以 `--helper` 启动时成为 root daemon。helper 是同一可执行文件的独立签名副本，GUI 进程按需加载 Sparkle；helper 不允许链接任何仅位于 App bundle 内的动态框架。
+
+## 安装与权限
+
+从 [GitHub Releases](https://github.com/sm-yjr/fan-control/releases) 下载对应版本的 DMG，把 `FanControl.app` 拖入 `Applications`。读取传感器与使用系统自动模式不应要求安装 root helper；修改风扇需要管理员授权。helper 的安装位置保持兼容：
 
 ```text
 /Library/PrivilegedHelperTools/com.local.fan-control.helper
 /Library/LaunchDaemons/com.local.fan-control.helper.plist
 ```
 
-helper 只监听本机 Unix domain socket。应用升级后，如果 helper 协议版本变化，界面会提示重新安装。
+Rust helper 使用协议版本 6，通过同一 socket 连接协商版本，并在锁后重新验证当前用户与 peer；控制租约限定 GUI 失联后的控制期限。新 socket 位于 root 持有且无额外写权限的 `/Library/PrivilegedHelperTools/com.local.fan-control.runtime/helper.sock`。旧 socket 仅允许只读状态诊断。旧协议 helper 必须通过正常管理员授权流程更新；应用不得向不兼容 helper 发送控制请求。租约用于在 GUI 失联或异常退出后把风扇交还系统，不能替代硬件转速边界、console-user 校验和实际 SMC 状态读取。安装是否成功以服务 readiness 和协议一致为准，不能仅凭文件已复制判定。
 
-## 本地构建
+用户配置继续保存在 `~/.config/fan-control/config.json`。迁移必须保留旧 Swift 配置中的模式、曲线、UUID 与自定义控制点；只有完全匹配旧默认值的曲线才可以升级默认策略。损坏配置和持久化失败需要可见反馈。具体兼容性与故障恢复验收见验收清单。
 
-最小构建与运行命令如下：
+## 本地构建与检查
+
+不启动 GUI 或硬件控制的入口为：
+
+```bash
+MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --locked
+./script/test_rust.sh
+./script/package_app.sh
+./script/test_update_runtime.sh
+```
+
+`test_rust.sh` 实际执行 `cargo fmt --all -- --check`、`cargo clippy --locked --workspace --all-targets -- -D warnings` 和 `cargo test --locked --workspace`，测试覆盖以当前 crate 中的用例与执行输出为准。旧 `test_*.sh` 中的 Swift 验证脚本只作为迁移对照，不再属于新应用 CI 验收入口。
+
+`package_app.sh` 默认构建 debug 版本，固定 `MACOSX_DEPLOYMENT_TARGET=14.0`，Cargo 输出位于 `target/debug/FanControl` 或 `target/release/FanControl`。脚本只接受 Apple Silicon 本机构建，`ARCHITECTURES` 只能为空或 `arm64`；不能用此参数宣称已经支持 Intel 或 universal 构建。App 产物默认位于 `dist/FanControl.app`。
+
+```bash
+APP_VERSION=0.2.0 \
+BUILD_NUMBER=200 \
+BUILD_CONFIGURATION=release \
+ARCHITECTURES=arm64 \
+./script/package_app.sh
+```
+
+`./build.sh` 也只构建 App。需要实际启动时，使用以下入口；启动后的控制配置可能会恢复，所以应先确认测试机器与现有配置：
 
 ```bash
 ./script/build_and_run.sh
-```
-
-产物位于 `dist/FanControl.app`。常用诊断命令为：
-
-```bash
-./script/build_and_run.sh build
-./script/test_fan_ui.sh
-./script/test_thermal_model.sh
-./script/test_status_item_presentation.sh
-./script/test_app_launch_mode.sh
-./script/test_update_runtime.sh
 ./script/build_and_run.sh --verify
 ./script/build_and_run.sh --logs
 ./script/build_and_run.sh --telemetry
 ./script/build_and_run.sh --debug
 ```
 
-发布模式可以显式指定版本、构建号和架构：
+运行脚本只会向当前用户、当前构建路径下的 GUI 发送 SIGTERM，等待其正常交还风扇并退出；不会按 `FanControl` 名称批量终止独立 root helper。`--verify` 检查对应 GUI 进程是否存在，不能证明界面布局、硬件控制或睡眠恢复已经通过。
 
-```bash
-APP_VERSION=1.2.0 \
-BUILD_NUMBER=120 \
-BUILD_CONFIGURATION=release \
-ARCHITECTURES=arm64 \
-./script/package_app.sh
-```
+## 控制策略与用户体验
 
-构建脚本会从 Sparkle 官方 GitHub Release 下载 2.9.2，校验 SHA-256 后再复制框架。打包时会在 `Contents/Library/LaunchServices` 中生成独立签名的 Helper；该文件脱离 App bundle 后仍能通过代码签名验证，并且不会链接 Sparkle.framework。
+每个风扇支持系统自动、智能热管理、固定转速和曲线控制，CPU/GPU 温度、热负荷和分组传感器详情，以及电池与电源状态。未检测到风扇、SMC 不可用、数据过期、转速上限未知与 helper 不可用必须使用不同状态说明，避免把检测中或失联状态呈现成正常停转。
 
-`test_update_runtime.sh` 会生成本地 ad-hoc 签名的测试应用，并通过隐藏的 `--check-updater-runtime` 诊断模式确认 Sparkle 能实际加载。该模式不会启动传感器、helper 或风扇控制。正式 Developer ID 构建保留 Hardened Runtime；没有 Team ID 的本地 ad-hoc 构建关闭 Hardened Runtime，避免 Library Validation 拒绝同样采用 ad-hoc 签名的 Sparkle。
+产品目标是更早识别持续发热，使高负载时的性能释放更稳定，同时允许调整键盘区域的体感目标。选择“智能热管理”并应用后，策略组合持续 CPU 负载前馈、CPU/GPU 各自的升温趋势、20 秒温度预测和机身热浸。持续负载需确认 4 秒，缓降保留 180 秒冷却驻留；CPU 利用率不可用时保留温度与趋势策略。GPU 负载目前仅从 GPU 温升响应，不提供 GPU 利用率读数。Apple 的 serious 热压力状态已经可能影响性能，因此它只作为保护信号，提前介入独立依赖负载与趋势。[Apple 热压力说明](https://developer.apple.com/documentation/foundation/processinfo/thermalstate-swift.enum/serious?language=objc)
 
-本地需要检查 DMG 布局时，可以在应用打包完成后运行：
+“体感目标”默认 38°C，可在 30–45°C 内微调。校准需要外部温度计在相同键盘区域实测两个稳定状态，再同时记录内部参考传感器；内部温度必须至少相差 3°C。校准限定于本机、指定传感器及已测温度范围，界面显示“表面估计”，不会把内部传感器值标成键盘实测温度。校准缺失、机型身份不符或传感器失效时暂停体感估计与调节，继续性能与安全策略。高于校准范围时停止估计并保留校准高端的保守散热下界，防止继续升温反而降速；低于范围时停止估计并按性能策略冷却。校准不保证表面恒温，达到目标的能力还取决于室温、负载与散热硬件。固定 RPM 与曲线是独立的高级调节，体感目标仅用于智能模式。
 
-```bash
-./script/package_dmg.sh \
-  dist/FanControl.app \
-  dist/FanControl-1.2.0.dmg \
-  "Fan Control 1.2.0"
-```
+持续性能优于系统默认及键盘表面温度改善，需要在同一机器、相同负载和环境下进行系统默认/智能模式对比，记录吞吐、频率、风扇、噪声、功耗与外部表面实测值。当前代码和模拟测试只确认策略会提前介入，尚不能证明优于 Apple 系统控制。具体实验门槛见验收清单。
 
-脚本会清除暂存副本中可能由开发机引入的 `com.apple.quarantine` 扩展属性，再创建只读压缩 DMG。网络下载仍会让 macOS 给 DMG 添加 quarantine，因此正式发布流程会分别公证并装订 App 和最终 DMG，再通过 Gatekeeper 验证。这样可以保留系统安全检查，并防止 quarantine 导致已签名 Helper 的安装链路异常。
+控制界面应同时表达用户设置、执行进度与硬件回读状态。手动目标和曲线目标不能当作当前 RPM；“系统自动”只有在回读确认后才能作为成功状态。失败要提供可执行的恢复入口，紧急安全接管要显示原因，保留用户配置以便正常恢复。所有交互沿用 AppKit 系统 Button、Picker/Menu、Slider 和表格控件，以保留键盘与 VoiceOver 行为；曲线需要精确数值编辑、添加/删除、撤销与应用前校验。颜色和动画只作辅助信息，并遵守 Reduce Motion。
 
-## 界面与状态栏反馈
+默认 `Thermal Load` 是 0–100% 的控制指标，表示持续发热与机身热浸，单位不是瓦特。它使用 CPU/GPU 组平均温度、机身传感器和系统热压力，过滤短时核心尖峰；缺少机身传感器时使用持续热源降级模型。曲线中的 0–100% 表示风扇硬件最小至最大 RPM 区间，停转使用独立语义。自定义配置不能绕过系统热压力、极端芯片温度、硬件上下限或采样过期保护。
 
-界面继续使用原生 SwiftUI 控件，风扇和控制模式使用 macOS 分段选择器，控制源使用菜单选择器。温度、热负荷和转速同时提供文本值，颜色只用于补充风险层级；展开按钮、滑块、曲线控制点和状态栏图标均提供辅助功能标签或操作。
+## 睡眠、退出与恢复
 
-状态栏图标根据所有风扇中最高的工作区间展示活动状态：
+真实系统睡眠前必须完成有界的风扇交还，然后确认电源事件。唤醒后保留多个时点的恢复重试，并读取实际 SMC 模式；硬件可能在睡眠中重置强制位，不能只信进程缓存。正常退出、注销、helper 更新和卸载也要先交还系统；GUI 异常退出由 helper 租约处理。删除 App 文件不等于已移除系统 helper。
 
-| 状态 | 判定 | 图标反馈 |
-| --- | --- | --- |
-| 停转 | 所有风扇低于 100 RPM | 静止、降低不透明度 |
-| 低速 | 至少一个风扇工作，最高转速低于可控区间的 55% | 2.4 秒一圈，由系统合成层旋转 |
-| 高速 | 至少一个风扇达到可控区间的 55% | 0.8 秒一圈，由系统合成层旋转 |
+恢复问题的诊断应包括 App/helper 版本、协议、采样时间、用户模式、观察到的 SMC 模式和请求结果。日志对外分享前删除用户名、主目录路径及其他个人信息。真实睡眠—唤醒、GUI 崩溃与断连恢复须在明确测试机器上验收，模拟测试不能替代这一步。
 
-状态项沿用 [Stats](https://github.com/exelban/stats) 等开源 macOS 菜单栏工具的原生 `NSStatusItem` 结构，弹窗内容仍由 SwiftUI 承载。风扇 SF Symbol 放在状态栏按钮的 18×18 pt 正方形子视图中，Core Animation 围绕图层中心执行线性旋转，应用进程无需按帧切换图片或重新计算 SwiftUI 视图。停转或系统开启“减少动态效果”时会移除动画。图标粗细、不透明度、工具提示和 VoiceOver 状态仍能表达当前层级。
+## Sparkle、签名与发布
 
-项目内的原生 `FanUI` 组件层借鉴 shadcn/ui 的 open-code 模型：组件源码直接属于项目，可以按产品需求修改，不引入 WebView、React、Tailwind 或 Node 构建链。`Sources/FanControl/FanUI/FanUIFoundation.swift` 定义背景、前景、边框、圆角、字号、字重、间距和动态效果等语义令牌，并保存可独立验证的指标呈现逻辑；`FanUIComponents.swift` 提供 Card、Section、Metric Badge、Mode Selector、Update Button、Status Row 和进度状态条。Button、Picker、Slider、Menu 等交互仍由系统控件提供，以保留键盘操作、VoiceOver、强调色和系统外观。
+Sparkle 仍固定为 2.9.2，下载源和 SHA-256 在 `script/package_app.sh` 中。构建脚本从官方发行包下载，校验后复制 framework 与原始许可证。`test_update_runtime.sh` 通过 `--check-updater-runtime` 检查本地打包 App 中的 Sparkle 实际加载；该诊断模式不应初始化传感器、helper 或风扇控制。
 
-`./script/test_fan_ui.sh` 使用 CLT 分别验证纯 Swift 令牌/呈现契约，以及通过 `NSHostingView` 离屏装载的原生组件树。状态栏 Core Animation 也通过 FanUI 的 Reduce Motion 策略决定是否运行。参考 [Apple HIG Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)、[Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion) 和 [shadcn/ui Tailwind v4 文档](https://ui.shadcn.com/docs/tailwind-v4)。
-
-## 热负荷模型
-
-瞬时核心温度适合保护芯片结温，无法直接表示机身中已经积累、需要由风扇排出的热量。默认控制源 `Thermal Load` 使用一个 0–100% 的两节点热模型：
-
-1. CPU 与 GPU 的组平均温度取较高值，经过 30 秒低通滤波，表示持续发热源。单个核心的短时睿频尖峰通常不会明显改变这一项。
-2. Mainboard、Airflow、NAND 和 Battery 等系统传感器取第 75 百分位，再经过 90 秒低通滤波，表示机身热容。该节点的正向升温速度用于提前识别热量正在积累。
-3. 有机身传感器时，热负荷由 35% 持续热源、55% 机身热浸和 10% 机身升温趋势组成。机型未暴露可用机身传感器时，应用退化为持续热源模型，并在展开的传感器区域明确显示。
-4. macOS `ProcessInfo.thermalState` 提供平台级安全下限：`fair`、`serious` 和 `critical` 至少对应 35%、75% 和 100% 热负荷。原始芯片温度从 96°C 起保留独立紧急保护，避免低通滤波延迟安全响应。
-
-这个指标是跨机型的控制量，不是热功率计，单位也不是瓦特。Apple 没有为这些 SMC 键公开统一校准值，所以曲线保留系统热压力和极端结温两条保护路径。模型依据可在界面展开区域检查，包括持续芯片温度、机身热容温度、升温速度和系统热压力。
-
-## 默认散热曲线
-
-在相似风机和阻抗条件下，风量近似随转速线性变化，风机功率近似随转速的三次方变化。默认曲线因此在中低热负荷区保持关闭或最低连续转速，仅在热浸持续增加时进入高转速区。参考资料包括 [ASHRAE fan laws](https://terminology.ashrae.org/?letter=F)、[美国能源部风机系统资料](https://www1.eere.energy.gov/manufacturing/tech_assistance/pdfs/fan_sourcebook.pdf) 和 [Apple thermal state 文档](https://developer.apple.com/documentation/foundation/processinfo/thermalstate-swift.enum)。
-
-| 热负荷 | 风扇目标 |
-| ---: | ---: |
-| 0–18% | 停转 |
-| 28% | 最低可持续转速 |
-| 45% | 可控转速区间的 12% |
-| 60% | 可控转速区间的 25% |
-| 75% | 可控转速区间的 45% |
-| 88% | 可控转速区间的 70% |
-| 100% | 最大转速 |
-
-这里的“可控转速区间”是风扇硬件最小 RPM 到最大 RPM 之间的范围。热负荷迟滞默认为 8 个百分点；停转后至少保持 90 秒，启动后至少运行 180 秒。达到 `serious`/`critical` 热压力、90% 热负荷或高转速需求时会绕过驻留和缓升限制。这样可以减少临界点附近的频繁起停，同时保留快速排热能力。
-
-从旧版本升级时，内容完全等于旧版默认值的 `Average CPU` 曲线会迁移到新模型。修改过控制点、迟滞或名称的自定义曲线保持原配置；用户仍可在控制源菜单中选择 CPU、GPU 或单个温度传感器。
-
-## 睡眠与唤醒
-
-进入睡眠前，控制器会恢复系统自动模式。唤醒后，macOS 可能已经重置 SMC 的强制控制位，所以应用会在多个时间点重新读取实际模式，并重放睡眠前的固定转速或曲线配置。这个延迟重试覆盖显示器唤醒、系统唤醒和登录完成之间的时序差异。
-
-如果配置没有恢复，请先查看统一日志：
-
-```bash
-./script/build_and_run.sh --telemetry
-```
-
-重点检查 `workspaceDidWake`、`wakeReapply`、helper 协议版本和 SMC 写入结果。
-
-## Sparkle 与 GitHub Release
-
-应用的稳定更新源是：
+稳定更新源保持为：
 
 ```text
 https://github.com/sm-yjr/fan-control/releases/latest/download/appcast.xml
 ```
 
-推送 `vMAJOR.MINOR.PATCH` 标签会触发发布工作流。工作流编译 Apple Silicon 版本，使用 Developer ID 签名 App，依次公证并装订 App 和 DMG，验证 Gatekeeper 接受最终磁盘映像，然后为该 DMG 生成 Ed25519 签名的 Sparkle appcast。GitHub Release 上传 `FanControl-版本号.dmg` 和 `appcast.xml`。
-
-发布工作流需要以下 GitHub Actions Secrets：
+正式发布只通过 `.github/workflows/release.yml`，由 `vMAJOR.MINOR.PATCH` 标签触发。工作流执行 Rust 检查、arm64 打包、Developer ID 签名、App 与 DMG 公证/装订、Gatekeeper 验证及 Sparkle Ed25519 appcast，再创建 GitHub Release。发布前需要确认 main CI、验收清单和以下六个 Actions Secrets；不能在日志、提交或终端输出 Secret 值：
 
 ```text
 MACOS_CERTIFICATE_P12_BASE64
@@ -158,8 +121,20 @@ APPLE_APP_SPECIFIC_PASSWORD
 SPARKLE_PRIVATE_KEY
 ```
 
-`MACOS_CERTIFICATE_P12_BASE64` 是 Developer ID Application 的 PKCS#12 文件经过 Base64 编码后的内容。`APPLE_APP_SPECIFIC_PASSWORD` 用于 `notarytool`。Sparkle 私钥只保存在 GitHub Actions Secrets 和发布者钥匙串中；仓库只包含对应公钥。
+`sign_app.sh` 保留 Installer、Downloader、Autoupdate、Updater、Framework、Helper、App 的由内到外签名顺序。正式 Developer ID 构建启用 Hardened Runtime；本地 ad-hoc 构建采用现有开发签名策略。`codesign --verify --deep --strict` 用于验证，不能把签名过程改成 `codesign --deep`。
+
+DMG 的本地构建检查不需要 Apple 公证账户：
+
+```bash
+./script/package_dmg.sh \
+  dist/FanControl.app \
+  dist/FanControl-0.2.0.dmg \
+  "Fan Control 0.2.0"
+hdiutil verify dist/FanControl-0.2.0.dmg
+```
+
+本地 ad-hoc 签名和 DMG 校验不能证明网络下载后的 Gatekeeper 接受或正式更新安装已经通过；正式候选包必须重新完成这些验收。
 
 ## 许可证
 
-Fan Control 采用 [GNU General Public License v3.0 only](LICENSE)。发布包包含的 Sparkle 使用 MIT License，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+Fan Control 采用 [GNU General Public License v3.0 only](LICENSE)。Sparkle 与 Rust 依赖的许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
