@@ -6,6 +6,23 @@
 
 ## 迁移范围
 
+### 2026-10-08：0.2.2 智能散热 hotfix
+
+本次修复四类 Apple Silicon Mac 的传感器分类与智能散热降速路径：M1–M5 分代映射覆盖 Mac mini、Mac Studio、MacBook Pro、MacBook Air；固件 CPU 均值与最高温度独立使用，持续热点形成普通散热下界，运行中采样长间隔不清空已有热负荷，紧急降档及解除保护后的降速继续渐变。Air 无风扇时仅监测。root helper 请求、风扇写入/租约/安装实现没有变更，协议继续为 8，不要求已安装的协议 8 helper 因此 hotfix 重装。
+
+| 机型覆盖 | 本次证据范围 |
+| --- | --- |
+| Mac mini M4 | 用户提供的脱敏传感器读数 fixture；聚合均值/最高值分类与热点策略模拟回归 |
+| Mac Studio M1 Ultra | 本机原生只读 SMC probe：识别 M1、2 个风扇、12 个 CPU 与 4 个 GPU 读数；不写入硬件 |
+| MacBook Pro、其他 mini/Studio 代际 | M1–M5 精确键分类及 1/2 风扇拓扑模拟；本轮没有这些机型实机写入验收 |
+| MacBook Air | M1–M5 零风扇拓扑模拟；零风扇拒绝写入；本轮没有 Air 实机温度读取 |
+
+本次本地验证：`./script/test_rust.sh` 的 rustfmt、Clippy 与 229 项 tests 通过，5 项需显式启用的只读 probe 默认忽略；CLT＋Rust 主构建通过。候选包 `.build/hotfix-0.2.2-candidate/FanControl.app` 为 0.2.2 / build 202、arm64、minos 14.0，App 与 App 外独立 helper 严格 ad-hoc 签名通过，helper 无 bundle 动态依赖；Stats MIT 原文随包一致。`test_update_runtime.sh`、候选包自身 Sparkle probe 与中英文隔离 `--ui-smoke` 通过。候选包自身只读 SMC 采样确认本机 Mac Studio M1 Ultra：2 个自动模式风扇、12 个 CPU/4 个 GPU 读数、warnings 为空。证据为 `.build/hotfix-0.2.2-{tests,build,package,update-runtime}.log` 与候选目录 `verification.json` / `studio-sensors.json`。
+
+使用 M4 用户诊断的相同温度与负载进行纯模型对照：0.2.1 的稳态目标为 1724 RPM；0.2.2 正确采用 TCMb=66.6065°C、TCMz=81.8281°C，稳态目标为 2844 RPM，保持热点散热下界。风扇范围1000–4900 RPM来自该诊断，整个对照没有SMC写入。证据在 `.build/cooling-investigation/diagnostic-replay-{results,0.2.2-results}.txt`。
+
+正式签名、公证、DMG 与 appcast 由本次 Release 工作流核验，公开产物以 [v0.2.2 Release](https://github.com/sm-yjr/fan-control/releases/tag/v0.2.2) 的最终结果为准。完整型号/系统矩阵实机控制、管理员安装、真实睡眠—唤醒、噪声与性能比较及旧版自动更新安装仍保持未验证。本次用户授权发布问题修复版本，不将上述待验证项改为通过，也不扩大为所有机型已完成实机验收或优于系统默认的宣传。
+
 主技术栈为 Rust workspace：`fan-core` 提供热模型、曲线、配置与安全策略，`fan-platform` 提供 SMC/IOKit、Unix socket、管理员安装和控制租约，`fan-app` 通过 AppKit 系统控件提供原生菜单栏体验。生产构建不调用 Swift；旧 `Sources/` 与 Swift 测试脚本暂留作迁移对照，完成兼容性和功能验收后再移除。
 
 保留每个风扇独立的 Auto/Adaptive/Manual/Curve、硬件上下限、默认热模型与迟滞/启停策略、传感器详情、电池/电源信息、系统自动回退、睡眠多时点恢复、配置迁移、更新、键盘与 VoiceOver。新增产品目标包括可确认的执行状态、采样过期处理、所有模式的安全接管、helper 失联租约、精确曲线编辑、中文提示和可执行的故障恢复入口。

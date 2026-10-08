@@ -78,6 +78,8 @@ struct Runtime {
     adaptive_low_demand_since: Option<f64>,
     input_missing_since: Option<f64>,
     safety_missing_since: Option<f64>,
+    /// 紧急保护解除后仍缓慢释放已建立的散热，直到回到普通目标。
+    safety_release_active: bool,
     last_input: Option<f64>,
     last_speed_percent: f64,
     rising: bool,
@@ -105,6 +107,7 @@ impl Default for Runtime {
             adaptive_low_demand_since: None,
             input_missing_since: None,
             safety_missing_since: None,
+            safety_release_active: false,
             last_input: None,
             last_speed_percent: 0.0,
             rising: true,
@@ -586,7 +589,7 @@ impl Controller {
                 ControlMode::Curve { .. } => {
                     let curve = config.curve.as_ref().expect("validated curve config");
                     let input = snapshot.input_value(&curve.sensor_key, &self.thermal);
-                    let speed = if let Some(input) = input {
+                    let mut speed = if let Some(input) = input {
                         state.input_missing_since = None;
                         if let Some(previous) = state.last_input {
                             if input - previous > 0.5 {
@@ -647,6 +650,15 @@ impl Controller {
                             continue;
                         }
                     };
+                    // 紧急保护刚解除时，停转曲线先缓慢降至硬件下限，
+                    // 避免 hand-back 绕过紧急散热的释放渐变。
+                    if speed < 0.0
+                        && minimum > 0
+                        && state.safety_release_active
+                        && state.status.applied_rpm.is_some_and(|rpm| rpm > minimum)
+                    {
+                        speed = 0.0;
+                    }
                     if speed < 0.0 && minimum > 0 {
                         // 最低连续转速不证明设备支持强制停转；让系统决定低负荷行为。
                         state.status.desired_rpm = None;
@@ -732,22 +744,36 @@ impl Controller {
                 .status
                 .applied_rpm
                 .unwrap_or(fan.current_rpm.unwrap_or(0.0) as u32);
-            let elapsed = if matches!(config.mode, ControlMode::Adaptive) {
+            let protected_decrease =
+                desired < previous && (state.status.safety_override || state.safety_release_active);
+            if state.status.safety_override {
+                state.safety_release_active = true;
+            }
+            let elapsed = if matches!(config.mode, ControlMode::Adaptive) || protected_decrease {
                 control_elapsed
             } else {
                 state.last_write_at.map(|last| now - last).unwrap_or(1.0)
+            };
+            // manual/curve 的紧急恢复也遵守 35 RPM/s，正常用户手动写入仍即时。
+            let ramp_mode = if protected_decrease {
+                &ControlMode::Adaptive
+            } else {
+                &config.mode
             };
             let ramped = ramp_target(
                 desired,
                 previous,
                 elapsed,
-                &config.mode,
+                ramp_mode,
                 bypass,
                 previous == 0 && desired > 0,
             );
             let ramped = ramped
                 .max(comfort_floor.unwrap_or(0))
                 .max(system_floor.unwrap_or(0));
+            if !state.status.safety_override && ramped == desired {
+                state.safety_release_active = false;
+            }
             let target = validated_rpm(ramped as i64, fan.min_rpm, fan.max_rpm, desired == 0)
                 .expect("bounded target");
             let should_write = force
@@ -755,7 +781,8 @@ impl Controller {
                 || state.status.applied_rpm.is_some_and(|previous| {
                     previous != target
                         && (previous.abs_diff(target)
-                            >= if matches!(config.mode, ControlMode::Adaptive) {
+                            >= if matches!(config.mode, ControlMode::Adaptive) || protected_decrease
+                            {
                                 50
                             } else {
                                 75

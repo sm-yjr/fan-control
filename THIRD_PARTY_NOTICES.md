@@ -12,6 +12,9 @@ Fan Control 使用 GPL-3.0-only。第三方组件保留各自许可证和版权�
 
 ## 已审核的 Rust 许可证集合
 
+Apple Silicon M1–M5 的 CPU/GPU 温度键与分组表参考 [Stats](https://github.com/exelban/stats) 的 MIT 源码，固定于提交 `ee4265f3b9afdffebd3273cf6a83b9327ead45b5` 的 `Modules/Sensors/values.swift`。本项目仅持有精确键与分组表，按芯片代际选择，并避免沿用可能不匹配实际机器的核心编号。上游 MIT 原文与版权声明保存在 `crates/fan-platform/licenses/Stats-LICENSE.txt`，发布包随附 `Resources/Stats-LICENSE.txt`。固件聚合节点 `TCMb` / `TCMz` 的语义还与 [iSMC 的传感器表](https://github.com/dkorunic/iSMC/blob/master/smc/sensors.go) 核对；未复制其完整表或实现。
+
+
 当前允许的 SPDX 标识仅为 `MIT`、`Apache-2.0`、`Zlib`、`BSD-2-Clause`、`BSD-3-Clause`、`ISC`、`Unlicense`、`Unicode-3.0`。集合按本项目 GPL-3.0-only 的发行要求审核；Apache-2.0 的兼容判断以 GPLv3 为前提。兼容性依据见 [GNU 许可证说明](https://www.gnu.org/licenses/license-list.html)。
 
 `Unlicense` 包含公共领域贡献及允许自由使用的补充许可，GNU 明确说明其与 GPL 兼容。`Unicode-3.0` 保留版权/许可声明和禁止以权利人名称做未经授权宣传的条件，GNU 明确将该版本列为与 GPL 兼容的宽松许可证；Unicode 官方也说明其基于 MIT，并区分它与 Unicode Terms of Use。[GNU Unlicense 说明](https://www.gnu.org/licenses/license-list.html#Unlicense)、[GNU Unicode v3 说明](https://www.gnu.org/licenses/license-list.html#Unicodev3)、[Unicode 官方许可政策](https://unicode.org/policies/licensing_policy.html)、[SPDX Unicode-3.0 原文](https://spdx.org/licenses/Unicode-3.0.html)。

@@ -787,7 +787,7 @@ fn run(
             }
             Ok(WorkerCommand::Export(path)) => {
                 let report_config = diagnostic_config(controller.config());
-                let report = serde_json::json!({"app_version":crate::app_version::current(),"helper_protocol":PROTOCOL_VERSION,"demo":demo,"helper_ready":ready,"snapshot":snapshot,"config":report_config,"thermal":controller.thermal_reading(),"fan_status":statuses,"configuration_notice":persistence.notice(),"safety_active":handback.active,"sample_age_secs":(origin.elapsed().as_secs_f64()-snapshot.sampled_at).max(0.)});
+                let report = serde_json::json!({"app_version":crate::app_version::current(),"helper_protocol":PROTOCOL_VERSION,"demo":demo,"helper_ready":ready,"snapshot":snapshot,"config":report_config,"thermal":controller.thermal_reading(),"fan_status":statuses,"fan_control":diagnostic_fan_controls(&controller),"configuration_notice":persistence.notice(),"safety_active":handback.active,"safety_failure":handback.failure,"takeover_hold_secs":handback.hold_remaining(Instant::now()).map(|remaining|remaining.as_secs_f64()),"sample_age_secs":(origin.elapsed().as_secs_f64()-snapshot.sampled_at).max(0.)});
                 message = match serde_json::to_vec_pretty(&report)
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| {
@@ -1230,6 +1230,29 @@ fn diagnostic_config(config: &Config) -> serde_json::Value {
     }
     report
 }
+fn diagnostic_fan_controls(controller: &Controller) -> serde_json::Value {
+    let controls: serde_json::Map<String, serde_json::Value> = controller
+        .config()
+        .fans
+        .iter()
+        .filter_map(|fan| {
+            controller.fan_status(fan.fan_id).map(|status| {
+                (
+                    fan.fan_id.to_string(),
+                    serde_json::json!({
+                        "desired_rpm": status.desired_rpm,
+                        "confirmed_target_rpm": status.applied_rpm,
+                        "reason": status.status_reason,
+                        "pending": status.pending,
+                        "last_failure": status.last_failure,
+                        "safety_override": status.safety_override,
+                    }),
+                )
+            })
+        })
+        .collect();
+    serde_json::Value::Object(controls)
+}
 fn action_allowed(
     command: &Command,
     ready: bool,
@@ -1661,6 +1684,23 @@ mod tests {
         assert!(!report.to_string().contains("private-device-scope"));
         assert!(!report.to_string().contains("machine_id"));
         assert!(report["thermal_policy"]["calibration"]["sensor_key"].is_string());
+    }
+    #[test]
+    fn diagnostic_controls_distinguish_pending_confirmed_and_failed_targets() {
+        let mut controller = manual();
+        let snapshot = demo_snapshot(0.0, &empty_snapshot(0.0));
+        let actions = controller.update(&snapshot, 0.0);
+        let action = actions.iter().find(|action| action.fan_id == 0).unwrap();
+        let pending = diagnostic_fan_controls(&controller);
+        assert_eq!(pending["0"]["desired_rpm"], 1800);
+        assert!(pending["0"]["confirmed_target_rpm"].is_null());
+        assert!(pending["0"]["pending"].is_object());
+        assert!(controller.acknowledge(action, false, 0.0));
+        let failed = diagnostic_fan_controls(&controller);
+        assert!(failed["0"]["confirmed_target_rpm"].is_null());
+        assert!(failed["0"]["pending"].is_null());
+        assert_eq!(failed["0"]["reason"], "write_failure");
+        assert!(failed["0"]["last_failure"].is_string());
     }
     #[test]
     fn a_previous_backup_does_not_allow_discarding_different_original_contents() {

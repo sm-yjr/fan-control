@@ -1,4 +1,7 @@
 use crate::{Error, Result};
+#[path = "smc_sensors.rs"]
+mod sensors;
+use sensors::{sensor_name, SiliconGeneration};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -139,12 +142,15 @@ pub struct Smc {
     known_fans: HashSet<u8>,
     unlock_attempts: HashMap<u8, Instant>,
     sensor_keys: Vec<(String, String, SensorGroup)>,
+    silicon_generation: SiliconGeneration,
     retry_delay: Duration,
     cancellation_check: Option<Box<dyn Fn() -> bool + Send>>,
 }
 impl Smc {
     pub fn open() -> Result<Self> {
-        Ok(Self::with_transport(Box::new(native::Connection::open()?)))
+        let mut smc = Self::with_transport(Box::new(native::Connection::open()?));
+        smc.silicon_generation = SiliconGeneration::read();
+        Ok(smc)
     }
     pub fn with_transport(transport: Box<dyn SmcTransport>) -> Self {
         Self {
@@ -153,6 +159,7 @@ impl Smc {
             known_fans: HashSet::new(),
             unlock_attempts: HashMap::new(),
             sensor_keys: Vec::new(),
+            silicon_generation: SiliconGeneration::Unknown,
             retry_delay: Duration::from_millis(50),
             cancellation_check: None,
         }
@@ -496,7 +503,7 @@ impl Smc {
             .into_iter()
             .filter(|key| key.starts_with('T'))
             .map(|key| {
-                let (name, group) = sensor_name(&key);
+                let (name, group) = sensor_name(&key, self.silicon_generation);
                 (key, name, group)
             })
             .collect();
@@ -568,7 +575,8 @@ impl Smc {
         // Invalid reads are absent from this snapshot; old temperatures never become fresh evidence.
         for (key, name, group) in self.sensor_keys.clone() {
             if let Ok(value) = self.read_value(&key) {
-                if value > 0.0 && value < 120.0 {
+                // Firmware may expose inactive sensor slots as exactly 1°C.
+                if value > 1.0 && value < 120.0 {
                     snapshot.sensors.push(RawSensor {
                         key,
                         name,
@@ -613,62 +621,6 @@ pub fn validated_rpm(request: i64, min: f64, max: f64) -> Option<u16> {
         return None;
     }
     Some(requested as u16)
-}
-
-fn sensor_name(key: &str) -> (String, SensorGroup) {
-    use SensorGroup::*;
-    let known = match key {
-        "Te05" => ("CPU E-core 1", Cpu),
-        "Te0L" => ("CPU E-core 2", Cpu),
-        "Te0P" => ("CPU E-core 3", Cpu),
-        "Te0S" => ("CPU E-core 4", Cpu),
-        "Tf04" => ("CPU P-core 1", Cpu),
-        "Tf09" => ("CPU P-core 2", Cpu),
-        "Tf0A" => ("CPU P-core 3", Cpu),
-        "Tf0B" => ("CPU P-core 4", Cpu),
-        "Tf0D" => ("CPU P-core 5", Cpu),
-        "Tf0E" => ("CPU P-core 6", Cpu),
-        "Tf44" => ("CPU P-core 7", Cpu),
-        "Tf49" => ("CPU P-core 8", Cpu),
-        "Tf4A" => ("CPU P-core 9", Cpu),
-        "Tf4B" => ("CPU P-core 10", Cpu),
-        "Tf4D" => ("CPU P-core 11", Cpu),
-        "Tf4E" => ("CPU P-core 12", Cpu),
-        "Tp09" | "Tp1h" => ("CPU E-core 1", Cpu),
-        "Tp0T" | "Tp1t" => ("CPU E-core 2", Cpu),
-        "Tp1p" => ("CPU E-core 3", Cpu),
-        "Tp1l" => ("CPU E-core 4", Cpu),
-        "Tp01" => ("CPU P-core 1", Cpu),
-        "Tp05" => ("CPU P-core 2", Cpu),
-        "Tp0D" => ("CPU P-core 3", Cpu),
-        "Tp0H" => ("CPU P-core 4", Cpu),
-        "Tp0L" => ("CPU P-core 5", Cpu),
-        "Tp0P" => ("CPU P-core 6", Cpu),
-        "Tp0X" => ("CPU P-core 7", Cpu),
-        "Tp0b" => ("CPU P-core 8", Cpu),
-        "Tf14" | "Tg05" | "Tg0f" => ("GPU 1", Gpu),
-        "Tf18" | "Tg0D" | "Tg0j" => ("GPU 2", Gpu),
-        "Tf19" | "Tg0L" => ("GPU 3", Gpu),
-        "Tf1A" | "Tg0T" => ("GPU 4", Gpu),
-        "Tf24" => ("GPU 5", Gpu),
-        "Tf28" => ("GPU 6", Gpu),
-        "Tf29" => ("GPU 7", Gpu),
-        "Tf2A" => ("GPU 8", Gpu),
-        "TC0P" => ("CPU Proximity", Cpu),
-        "TC0D" => ("CPU Diode", Cpu),
-        "TCAD" => ("CPU Package", Cpu),
-        "TG0P" => ("GPU Proximity", Gpu),
-        "TG0D" => ("GPU Diode", Gpu),
-        "Tm0P" => ("主板", System),
-        "TaLP" => ("左侧气流", System),
-        "TaRF" => ("右侧气流", System),
-        "TH0x" => ("NAND", System),
-        "TB1T" => ("电池 1", System),
-        "TB2T" => ("电池 2", System),
-        "TW0P" => ("无线网卡", System),
-        _ => (key, Other),
-    };
-    (known.0.to_string(), known.1)
 }
 
 #[repr(C)]
@@ -1032,6 +984,129 @@ mod tests {
         smc.retry_delay = Duration::ZERO;
         (smc, state)
     }
+    #[test]
+    #[ignore = "opt-in, read-only physical temperature probe; no writes"]
+    fn native_silicon_sensor_readonly_probe() {
+        let mut smc = Smc::open().unwrap();
+        let snapshot = smc.discover_snapshot().unwrap();
+        let cpu_count = snapshot
+            .sensors
+            .iter()
+            .filter(|sensor| sensor.group == SensorGroup::Cpu)
+            .count();
+        let gpu_count = snapshot
+            .sensors
+            .iter()
+            .filter(|sensor| sensor.group == SensorGroup::Gpu)
+            .count();
+        assert_ne!(smc.silicon_generation, SiliconGeneration::Unknown);
+        assert!(cpu_count > 0 && gpu_count > 0);
+        println!(
+            "chip={:?}, fans={}, CPU readings={}, GPU readings={}",
+            smc.silicon_generation,
+            snapshot.fans.len(),
+            cpu_count,
+            gpu_count
+        );
+    }
+
+    #[test]
+    fn mac_family_topologies_read_temperatures_without_inventing_air_fans() {
+        // Mini, Studio, Pro and Air differ in physical fan count; telemetry must
+        // use the chip profile and actual keys, without requiring a fan register.
+        for count in [0, 1, 2] {
+            for (chip, cpu_key, gpu_key) in [
+                (SiliconGeneration::M1, "Tp01", "Tg05"),
+                (SiliconGeneration::M2, "Tp1h", "Tg0f"),
+                (SiliconGeneration::M3, "Te05", "Tf14"),
+                (SiliconGeneration::M4, "Te09", "Tg0G"),
+                (SiliconGeneration::M5, "Tp00", "Tg0U"),
+            ] {
+                let (mut smc, state) = setup();
+                smc.silicon_generation = chip;
+                {
+                    let mut mock = state.lock().unwrap();
+                    mock.keys.insert("FNum".into(), value("ui8 ", &[count]));
+                    for key in [cpu_key, gpu_key, "TCMb", "TCMz"] {
+                        mock.keys
+                            .insert(key.into(), value("flt ", &80f32.to_le_bytes()));
+                    }
+                }
+                let snapshot = smc.discover_snapshot().unwrap();
+                assert_eq!(snapshot.fans.len(), usize::from(count));
+                for (key, group) in [
+                    (cpu_key, SensorGroup::Cpu),
+                    (gpu_key, SensorGroup::Gpu),
+                    ("TCMb", SensorGroup::Cpu),
+                    ("TCMz", SensorGroup::Cpu),
+                ] {
+                    assert_eq!(
+                        snapshot
+                            .sensors
+                            .iter()
+                            .find(|sensor| sensor.key == key)
+                            .unwrap()
+                            .group,
+                        group
+                    );
+                }
+                assert!(state.lock().unwrap().writes.is_empty());
+                if count == 0 {
+                    assert!(smc.set_fan_rpm(0, 2000).is_err());
+                    assert!(state.lock().unwrap().writes.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m4_mini_diagnostic_hotspot_enters_cpu_telemetry_and_placeholders_are_absent() {
+        let readings: Vec<(String, f64)> =
+            serde_json::from_str(include_str!("../tests/fixtures/m4-mini-temperatures.json"))
+                .unwrap();
+        let (mut smc, state) = setup();
+        smc.silicon_generation = SiliconGeneration::M4;
+        {
+            let mut mock = state.lock().unwrap();
+            mock.keys.retain(|key, _| !key.starts_with('T'));
+            for (key, temperature) in readings {
+                mock.keys
+                    .insert(key, value("flt ", &(temperature as f32).to_le_bytes()));
+            }
+        }
+        let snapshot = smc.discover_snapshot().unwrap();
+        let hotspot = snapshot
+            .sensors
+            .iter()
+            .find(|sensor| sensor.key == "TCMz")
+            .unwrap();
+        assert_eq!(hotspot.group, SensorGroup::Cpu);
+        assert!((hotspot.value - 81.828).abs() < 0.01);
+        assert_eq!(
+            snapshot
+                .sensors
+                .iter()
+                .find(|sensor| sensor.key == "TCMb")
+                .unwrap()
+                .group,
+            SensorGroup::Cpu
+        );
+        assert!(snapshot.sensors.iter().all(|sensor| sensor.value > 1.0));
+        assert!(snapshot
+            .sensors
+            .iter()
+            .filter(|sensor| sensor.key.starts_with("Ta0"))
+            .all(|sensor| sensor.group == SensorGroup::Other));
+        assert!(state.lock().unwrap().writes.is_empty());
+        state.lock().unwrap().keys.remove("TCMz");
+        assert!(smc
+            .refresh_snapshot()
+            .unwrap()
+            .sensors
+            .iter()
+            .all(|sensor| sensor.key != "TCMz"));
+    }
+
     #[test]
     fn fixed_point_is_signed_and_float_rejects_nan() {
         assert_eq!(

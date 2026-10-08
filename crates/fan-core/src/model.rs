@@ -88,6 +88,27 @@ impl Snapshot {
             .collect()
     }
 
+    /// 固件的 CPU 均值与热点是不同观测量，不能再次混入核心列表求平均。
+    pub fn average_temperature(&self, group: SensorGroup) -> Option<f64> {
+        if group == SensorGroup::Cpu {
+            if let Some(value) = self
+                .sensors
+                .iter()
+                .find(|sensor| sensor.group == group && sensor.key == "TCMb")
+                .and_then(|sensor| sensor.value.filter(|value| valid_temperature(*value)))
+            {
+                return Some(value);
+            }
+        }
+        let values: Vec<f64> = self
+            .sensors
+            .iter()
+            .filter(|sensor| sensor.group == group && sensor.key != "TCMz")
+            .filter_map(|sensor| sensor.value.filter(|value| valid_temperature(*value)))
+            .collect();
+        average(&values)
+    }
+
     pub fn hottest_silicon(&self) -> Option<f64> {
         self.sensors
             .iter()
@@ -99,8 +120,8 @@ impl Snapshot {
     pub fn input_value(&self, key: &str, thermal: &crate::ThermalReading) -> Option<f64> {
         match key {
             THERMAL_DEMAND_KEY => thermal.available.then_some(thermal.demand_percent),
-            "Average CPU" => average(&self.temperature_values(SensorGroup::Cpu)),
-            "Average GPU" => average(&self.temperature_values(SensorGroup::Gpu)),
+            "Average CPU" => self.average_temperature(SensorGroup::Cpu),
+            "Average GPU" => self.average_temperature(SensorGroup::Gpu),
             "Hottest CPU" => self
                 .temperature_values(SensorGroup::Cpu)
                 .into_iter()

@@ -223,29 +223,34 @@ impl AdaptiveEstimator {
         policy: &ThermalPolicy,
         elapsed: f64,
     ) -> AdaptiveReading {
-        let reseed = !elapsed.is_finite() || elapsed <= 0.0 || elapsed > 15.0;
+        let reseed = !elapsed.is_finite() || elapsed <= 0.0;
         if reseed {
             self.reset();
         }
-        let dt = if reseed { 0.0 } else { elapsed };
-        let average = |group| {
-            let values = snapshot.temperature_values(group);
-            (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
-        };
-        let cpu = average(SensorGroup::Cpu);
-        let gpu = average(SensorGroup::Gpu);
+        // 新采样的有效性由 controller 检查。调度空档不能清除此前的持续散热，
+        // 也不能把无人观测的空档当作持续负载或温升的证明。
+        let observation_gap = !reseed && elapsed > crate::SNAPSHOT_MAXIMUM_AGE;
+        if observation_gap {
+            self.cpu_trend = SiliconTrend::default();
+            self.gpu_trend = SiliconTrend::default();
+            self.load_elapsed = 0.0;
+        }
+        let dt = if reseed { 0.0 } else { elapsed.min(5.0) };
+        let observation_dt = if observation_gap { 0.0 } else { dt };
+        let cpu = snapshot.average_temperature(SensorGroup::Cpu);
+        let gpu = snapshot.average_temperature(SensorGroup::Gpu);
         let silicon = [cpu, gpu].into_iter().flatten().reduce(f64::max);
         let load = snapshot
             .cpu_utilization_percent
             .filter(|load| load.is_finite() && (0.0..=100.0).contains(load));
         if load.is_some_and(|load| load >= 65.0) && silicon.is_some() {
-            self.load_elapsed += dt;
+            self.load_elapsed += observation_dt;
         } else {
             self.load_elapsed = 0.0;
         }
         let load_sustained = self.load_elapsed >= ADAPTIVE_LOAD_CONFIRMATION_SECONDS;
-        let (cpu_prediction, cpu_rising) = self.cpu_trend.update(cpu, dt);
-        let (gpu_prediction, gpu_rising) = self.gpu_trend.update(gpu, dt);
+        let (cpu_prediction, cpu_rising) = self.cpu_trend.update(cpu, observation_dt);
+        let (gpu_prediction, gpu_rising) = self.gpu_trend.update(gpu, observation_dt);
         let trend_confirmed = cpu_rising || gpu_rising;
         let predicted = [cpu_prediction, gpu_prediction]
             .into_iter()
@@ -341,7 +346,7 @@ impl AdaptiveEstimator {
             intervention,
             // Load and a calibrated proxy cannot authorize custom control when
             // live CPU/GPU safety telemetry is absent.
-            available: silicon.is_some(),
+            available: snapshot.hottest_silicon().is_some(),
         }
     }
 }

@@ -5,11 +5,14 @@ use serde::{Deserialize, Serialize};
 pub struct ThermalReading {
     pub demand_percent: f64,
     pub sustained_silicon_temperature: f64,
+    /// 独立过滤的芯片热点；不与固件均值或核心平均重复计数。
+    #[serde(default)]
+    pub sustained_hotspot_temperature: f64,
     pub chassis_temperature: f64,
     pub chassis_rise_per_minute: f64,
     pub pressure: ThermalPressure,
     pub uses_chassis_sensor: bool,
-    /// 只有当前采样有可用的 silicon/chassis 输入才为 true。
+    /// 只有当前采样有可用的 silicon/hotspot/chassis 输入才为 true。
     pub available: bool,
     #[serde(default)]
     pub adaptive: crate::AdaptiveReading,
@@ -19,8 +22,11 @@ pub struct ThermalReading {
 pub struct ThermalEstimator {
     sustained_silicon: Option<f64>,
     silicon_weight: f64,
+    sustained_hotspot: Option<f64>,
+    hotspot_weight: f64,
     filtered_chassis: Option<f64>,
     silicon_missing_elapsed: f64,
+    hotspot_missing_elapsed: f64,
     chassis_missing_elapsed: f64,
 }
 
@@ -30,15 +36,13 @@ impl ThermalEstimator {
     }
 
     pub fn update_snapshot(&mut self, snapshot: &Snapshot, elapsed: f64) -> ThermalReading {
-        let cpu = snapshot.temperature_values(SensorGroup::Cpu);
-        let gpu = snapshot.temperature_values(SensorGroup::Gpu);
-        let average = |values: &[f64]| {
-            (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
-        };
-        let silicon = [average(&cpu), average(&gpu)]
-            .into_iter()
-            .flatten()
-            .reduce(f64::max);
+        let silicon = [
+            snapshot.average_temperature(SensorGroup::Cpu),
+            snapshot.average_temperature(SensorGroup::Gpu),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(f64::max);
         // Airport 的局部热量不代表机身热容量，保留 Swift 的排除条件。
         let chassis: Vec<f64> = snapshot
             .sensors
@@ -68,7 +72,8 @@ impl ThermalEstimator {
         let emergency = emergency_silicon
             .filter(|value| valid_temperature(*value))
             .or(silicon);
-        let reseed = !elapsed.is_finite() || elapsed <= 0.0 || elapsed > 30.0;
+        // 睡眠/会话恢复显式 reset；新鲜采样间的调度空档仅限制积分步长。
+        let reseed = !elapsed.is_finite() || elapsed <= 0.0;
         let dt = if elapsed.is_finite() {
             elapsed.clamp(0.5, 10.0)
         } else {
@@ -82,8 +87,11 @@ impl ThermalEstimator {
         if reseed {
             self.sustained_silicon = None;
             self.silicon_weight = 0.0;
+            self.sustained_hotspot = None;
+            self.hotspot_weight = 0.0;
             self.filtered_chassis = chassis;
             self.silicon_missing_elapsed = 0.0;
+            self.hotspot_missing_elapsed = 0.0;
             self.chassis_missing_elapsed = 0.0;
         }
         if let Some(sample) = silicon {
@@ -106,6 +114,24 @@ impl ThermalEstimator {
                 self.silicon_weight = 0.0;
             }
         }
+        if let Some(sample) = emergency {
+            self.hotspot_missing_elapsed = 0.0;
+            let decay = (-dt / 30.0).exp();
+            self.hotspot_weight = decay * self.hotspot_weight + (1.0 - decay);
+            self.sustained_hotspot = Some(
+                self.sustained_hotspot
+                    .map(|previous| {
+                        previous + (1.0 - decay) / self.hotspot_weight * (sample - previous)
+                    })
+                    .unwrap_or(sample),
+            );
+        } else {
+            self.hotspot_missing_elapsed += missing_elapsed;
+            if self.hotspot_missing_elapsed >= crate::MISSING_INPUT_MAXIMUM_HOLD {
+                self.sustained_hotspot = None;
+                self.hotspot_weight = 0.0;
+            }
+        }
         let previous_chassis = self.filtered_chassis;
         if let Some(sample) = chassis {
             self.chassis_missing_elapsed = 0.0;
@@ -126,6 +152,12 @@ impl ThermalEstimator {
                 .unwrap_or(0.0)
         };
         let silicon_load = smooth_step(sustained, 50.0, 95.0);
+        // 普通高热点散热独立于冷机身/核心平均。30 秒过滤保留尖峰拒绝，
+        // 65...95°C 映射到 0...80% 的下界；96°C 原始读数仍立即紧急保护。
+        let hotspot_floor = self
+            .sustained_hotspot
+            .map(|hotspot| 80.0 * smooth_step(hotspot, 65.0, 95.0))
+            .unwrap_or(0.0);
         let chassis_load = smooth_step(filtered_chassis, 32.0, 55.0);
         let rising_load = smooth_step(rise, 0.2, 2.0);
         let mut demand = if self.filtered_chassis.is_some() {
@@ -133,6 +165,7 @@ impl ThermalEstimator {
         } else {
             100.0 * silicon_load
         };
+        demand = demand.max(hotspot_floor);
         demand = demand.max(match pressure {
             ThermalPressure::Nominal => 0.0,
             ThermalPressure::Fair => 35.0,
@@ -145,11 +178,12 @@ impl ThermalEstimator {
         ThermalReading {
             demand_percent: demand.clamp(0.0, 100.0),
             sustained_silicon_temperature: sustained,
+            sustained_hotspot_temperature: self.sustained_hotspot.unwrap_or(0.0),
             chassis_temperature: filtered_chassis,
             chassis_rise_per_minute: rise,
             pressure,
             uses_chassis_sensor: self.filtered_chassis.is_some(),
-            available: silicon.is_some() || chassis.is_some(),
+            available: silicon.is_some() || emergency.is_some() || chassis.is_some(),
             adaptive: crate::AdaptiveReading::default(),
         }
     }

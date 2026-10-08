@@ -38,7 +38,7 @@ pub fn ramp_target(
     starting_from_stopped: bool,
 ) -> u32 {
     if matches!(mode, ControlMode::Manual { .. })
-        || bypass
+        || (bypass && requested > previous)
         || (starting_from_stopped && !matches!(mode, ControlMode::Adaptive))
         || previous == requested
     {
