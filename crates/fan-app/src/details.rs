@@ -5,39 +5,18 @@ use crate::gauge::{temperature_color, Bar};
 use crate::popover::{stack, styled_label, tinted_box, TintedView};
 use crate::ui::{raw_text, text};
 use crate::worker::UiSnapshot;
-use fan_core::SensorGroup;
-use objc2::{define_class, msg_send, rc::Retained, MainThreadOnly};
+use objc2::rc::Retained;
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSSize};
 
 const TILE_GAP: f64 = 10.;
 const TILE: f64 = (CONTENT - TILE_GAP * 3.) / 4.;
 const LIST_HEIGHT: f64 = 250.;
-const LIST_WIDTH: f64 = CONTENT - 16.;
-const BAR: f64 = 150.;
 /// Bars span this range so typical readings spread across the width.
 const COOL: f64 = 20.;
 const HOT: f64 = 110.;
 
-define_class!(
-    /// Top-left origin, so a scrolled list starts at its first row.
-    #[unsafe(super=NSView)]
-    #[thread_kind=MainThreadOnly]
-    pub(crate) struct Flipped;
-    impl Flipped {
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool {
-            true
-        }
-    }
-);
-
 struct Tile {
-    value: Retained<NSTextField>,
-    bar: Retained<Bar>,
-}
-
-struct SensorRow {
     value: Retained<NSTextField>,
     bar: Retained<Bar>,
 }
@@ -54,10 +33,7 @@ pub(crate) struct DetailsPage {
     battery_state: Retained<NSTextField>,
     battery_detail: Retained<NSTextField>,
     pub search: Retained<NSSearchField>,
-    list: Retained<NSStackView>,
-    rows: Vec<SensorRow>,
-    /// Sensor keys and the filter the current rows were built for.
-    layout: Option<(String, Vec<String>)>,
+    list: crate::sensor_list::SensorList,
 }
 
 fn tile(mtm: MainThreadMarker, title: &str) -> (Retained<TintedView>, Tile) {
@@ -78,24 +54,6 @@ fn tile(mtm: MainThreadMarker, title: &str) -> (Retained<TintedView>, Tile) {
         .constraintEqualToConstant(TILE)
         .setActive(true);
     (view, Tile { value, bar })
-}
-
-fn group_label(group: SensorGroup) -> &'static str {
-    match group {
-        SensorGroup::Cpu => "处理器",
-        SensorGroup::Gpu => "图形处理器",
-        SensorGroup::System => "机身内部（不代表键盘表面温度）",
-        SensorGroup::Other => "其他",
-    }
-}
-
-fn group_order(group: SensorGroup) -> u8 {
-    match group {
-        SensorGroup::Cpu => 0,
-        SensorGroup::Gpu => 1,
-        SensorGroup::System => 2,
-        SensorGroup::Other => 3,
-    }
 }
 
 fn fraction(celsius: f64) -> f64 {
@@ -159,42 +117,8 @@ impl DetailsPage {
             .setActive(true);
         view.addArrangedSubview(&header);
 
-        let list = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 6.);
-        list.setEdgeInsets(objc2_foundation::NSEdgeInsets {
-            top: 10.,
-            left: 12.,
-            bottom: 10.,
-            right: 12.,
-        });
-        list.setTranslatesAutoresizingMaskIntoConstraints(false);
-        let document: Retained<Flipped> = unsafe { msg_send![Flipped::alloc(mtm), init] };
-        document.setTranslatesAutoresizingMaskIntoConstraints(false);
-        document.addSubview(&list);
-        let scroll = NSScrollView::new(mtm);
-        scroll.setHasVerticalScroller(true);
-        scroll.setAutohidesScrollers(true);
-        scroll.setDrawsBackground(false);
-        scroll.setDocumentView(Some(&document));
-        let clip = scroll.contentView();
-        for constraint in [
-            list.topAnchor()
-                .constraintEqualToAnchor(&document.topAnchor()),
-            list.leadingAnchor()
-                .constraintEqualToAnchor(&document.leadingAnchor()),
-            document
-                .bottomAnchor()
-                .constraintEqualToAnchor(&list.bottomAnchor()),
-            document.widthAnchor().constraintEqualToConstant(LIST_WIDTH),
-            document
-                .topAnchor()
-                .constraintEqualToAnchor(&clip.topAnchor()),
-            document
-                .leadingAnchor()
-                .constraintEqualToAnchor(&clip.leadingAnchor()),
-        ] {
-            constraint.setActive(true);
-        }
-        let list_box = tinted_box(mtm, &scroll, NSSize::new(0., 0.));
+        let list = crate::sensor_list::SensorList::new(mtm, CONTENT, LIST_HEIGHT);
+        let list_box = tinted_box(mtm, &list.scroll, NSSize::new(0., 0.));
         list_box.set_fill(&NSColor::quaternarySystemFillColor());
         list_box
             .widthAnchor()
@@ -208,6 +132,11 @@ impl DetailsPage {
         view.addArrangedSubview(&caption(
             mtm,
             "颜色表示温度高低：绿色较凉，黄色温热，橙色偏热，红色过热。芯片在高负载下短时达到 90°C 以上属于正常现象。",
+            CONTENT,
+        ));
+        view.addArrangedSubview(&caption(
+            mtm,
+            "名称按芯片型号核对；未确认的项目保留原始标识，虚拟温度与热余量单独标明。",
             CONTENT,
         ));
         Self {
@@ -226,13 +155,14 @@ impl DetailsPage {
             battery_detail,
             search,
             list,
-            rows: Vec::new(),
-            layout: None,
         }
     }
 
+    pub fn verify_native_list(&mut self, window: &NSWindow) {
+        self.list.verify_native_list(window);
+    }
+
     pub fn refresh(&mut self, state: &UiSnapshot, fresh: bool) {
-        let mtm = MainThreadMarker::new().expect("UI main thread");
         let celsius = |tile: &Tile, value: Option<f64>| match value.filter(|_| fresh) {
             Some(value) => {
                 tile.value
@@ -314,101 +244,10 @@ impl DetailsPage {
                 .setStringValue(&raw_text(&detail.join(" · ")));
         }
 
-        let filter = self.search.stringValue().to_string().trim().to_lowercase();
-        let mut sensors: Vec<_> = state
-            .snapshot
-            .sensors
-            .iter()
-            .filter(|sensor| {
-                filter.is_empty()
-                    || sensor.name.to_lowercase().contains(&filter)
-                    || crate::i18n::translate(&sensor.name)
-                        .to_lowercase()
-                        .contains(&filter)
-                    || sensor.key.to_lowercase().contains(&filter)
-            })
-            .collect();
-        sensors.sort_by_key(|sensor| (group_order(sensor.group), sensor.key.clone()));
-        let keys: Vec<_> = sensors.iter().map(|sensor| sensor.key.clone()).collect();
-        let layout = Some((filter, keys));
-        if self.layout != layout {
-            for view in self.list.arrangedSubviews().iter() {
-                view.removeFromSuperview();
-            }
-            self.rows.clear();
-            let mut group = None;
-            for sensor in &sensors {
-                if group != Some(sensor.group) {
-                    let header = styled_label(
-                        mtm,
-                        group_label(sensor.group),
-                        form::CAPTION,
-                        true,
-                        true,
-                        None,
-                    );
-                    if group.is_some() {
-                        if let Some(last) = self.list.arrangedSubviews().lastObject() {
-                            self.list.setCustomSpacing_afterView(14., &last);
-                        }
-                    }
-                    self.list.addArrangedSubview(&header);
-                    group = Some(sensor.group);
-                }
-                let row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
-                let name = styled_label(mtm, &sensor.name, form::BODY, false, false, None);
-                let key = styled_label(mtm, &sensor.key, form::CAPTION, false, true, None);
-                key.setTextColor(Some(&NSColor::tertiaryLabelColor()));
-                let bar = Bar::new(mtm, BAR, 6.);
-                let value = styled_label(mtm, "--", form::BODY, false, false, None);
-                value.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-                    form::BODY,
-                    unsafe { NSFontWeightRegular },
-                )));
-                value.setAlignment(NSTextAlignment::Right);
-                value
-                    .widthAnchor()
-                    .constraintEqualToConstant(56.)
-                    .setActive(true);
-                row.addArrangedSubview(&name);
-                row.addArrangedSubview(&key);
-                row.addArrangedSubview(&spacer(mtm));
-                row.addArrangedSubview(&bar);
-                row.addArrangedSubview(&value);
-                row.widthAnchor()
-                    .constraintEqualToConstant(LIST_WIDTH - 24.)
-                    .setActive(true);
-                self.list.addArrangedSubview(&row);
-                self.rows.push(SensorRow { value, bar });
-            }
-            if sensors.is_empty() {
-                self.list.addArrangedSubview(&styled_label(
-                    mtm,
-                    if state.snapshot.sensors.is_empty() {
-                        "正在读取传感器…"
-                    } else {
-                        "没有匹配的传感器。"
-                    },
-                    form::BODY,
-                    false,
-                    true,
-                    None,
-                ));
-            }
-            self.layout = layout;
-        }
-        for (row, sensor) in self.rows.iter().zip(&sensors) {
-            match sensor.value.filter(|_| fresh) {
-                Some(value) => {
-                    row.value.setStringValue(&raw_text(&format!("{value:.1}°")));
-                    row.bar
-                        .set(Some(fraction(value)), &temperature_color(value));
-                }
-                None => {
-                    row.value.setStringValue(&raw_text("--"));
-                    row.bar.set(None, &NSColor::secondaryLabelColor());
-                }
-            }
-        }
+        self.list.refresh(
+            &state.snapshot.sensors,
+            &self.search.stringValue().to_string(),
+            fresh,
+        );
     }
 }

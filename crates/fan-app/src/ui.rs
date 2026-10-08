@@ -233,6 +233,8 @@ define_class!(
                 if ui.policy.is_none() { ui.build_policy(self); }
                 if self.ivars().smoke && !ui.fan_ids.is_empty() {
                     ui.open_editor(self,None,false);ui.open_policy(self);ui.open_preferences(self);
+                    ui.tabs.setSelectedTabViewItemIndex(3);
+                    ui.details.verify_native_list(&ui.window);
                     smoke_done=true;
                 }
             }

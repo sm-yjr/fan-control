@@ -6,6 +6,18 @@
 
 ## 迁移范围
 
+### 2026-10-08：0.2.3 候选：温度详情滚动与传感器语义
+
+温度详情的全部传感器改为 AppKit view-based `NSTableView`，复用离屏行，只更新当前可见读数。移除将滚动 document 顶部约束到 clip 顶部的布局；定时采样不重载行结构，保留滚动位置，搜索或语义变化才重载。名称与原始 key 分行显示，长名称保留完整 tooltip，原生表格保留键盘选中和实际文本控件的可访问性。M1–M5 精确语义来源、覆盖率与未确认项见 [传感器语义说明](sensor-semantics.md)；所有既有 CPU/GPU/System 控制成员及 helper 协议 8 保持不变。
+
+本地 `test_rust.sh` 的 rustfmt、Clippy 和 235 项 tests 通过，5 项实机 probe 默认跳过。CLT＋Rust 主构建、shell 语法检查、本地 ad-hoc 签名打包和 `test_update_runtime.sh` 通过。候选包 `.build/sensor-details-candidate/FanControl.app` 的中英文 `--ui-smoke` 在生产详情 Tab 容器中显示 1000 个模拟读数，8 次跨位置滚动累计创建 15 个单元格；每次更新核对最新/过期读数与滚动位置，搜索命中、空结果及清空搜索均通过。一次本地中英文检查的最慢同步 layout/display 为 4.27 / 4.23 ms；这是同步原生检查耗时，不是连续触控板滚动帧率或主观流畅度验收。
+
+候选包自身只读 SMC 检查确认本机 Apple M1 Ultra 的 316 项读数，243 项已有语义，73 项未确认，warnings 为空；没有写风扇。App 外复制 helper 的严格签名通过，动态依赖无 Sparkle、`@rpath` 或 bundle 路径。iSMC 原始 GPLv3 许可与版权/来源说明随包保留。证据为 `.build/sensor-details-{tests,package,update-runtime,ui-zh,ui-en,helper-libraries}.log` 和 `.build/sensor-details-readonly.json`。
+
+独立审阅核对了表格对象生命周期、可见刷新和控制成员不变，并确认来源与许可证 hash。M5 热余量仍受既有 `>1°C` 读取槽过滤，0–1°C 不显示；该非绝对温度边界保存在语义说明，未宣称全范围显示验收。
+
+本次候选版本为 0.2.3，已获得本轮问题修复版本的发布授权；当前只完成候选准备，未创建或推送 tag，未发布。未替换已安装 App 或 root helper。连续触控板滚动体感、VoiceOver 实际读序、深浅色实际外观及 M5 热余量 0–1°C 显示保持待验证；本轮没有管理员安装、SMC 写入或睡眠恢复验收，不将这些项目标为通过。
+
 ### 2026-10-08：0.2.2 智能散热 hotfix
 
 本次修复四类 Apple Silicon Mac 的传感器分类与智能散热降速路径：M1–M5 分代映射覆盖 Mac mini、Mac Studio、MacBook Pro、MacBook Air；固件 CPU 均值与最高温度独立使用，持续热点形成普通散热下界，运行中采样长间隔不清空已有热负荷，紧急降档及解除保护后的降速继续渐变。Air 无风扇时仅监测。root helper 请求、风扇写入/租约/安装实现没有变更，协议继续为 8，不要求已安装的协议 8 helper 因此 hotfix 重装。

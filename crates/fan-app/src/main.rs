@@ -16,6 +16,7 @@ mod policy;
 mod popover;
 mod preferences;
 mod presenter;
+mod sensor_list;
 mod settings;
 mod storage;
 mod telemetry;

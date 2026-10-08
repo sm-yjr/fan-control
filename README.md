@@ -43,6 +43,8 @@ rustup component add rustfmt clippy
 
 这些是代码适配范围，不代表每种芯片、机型和 macOS 组合都已实机验收。Intel 不在本项目构建与支持范围内。未知或不可用传感器不冒充 CPU/GPU 温度；风扇上限、模式或采样无法确认时保留系统安全回退。
 
+温度详情使用 AppKit 原生表格复用可见行，搜索支持语义名称与原始 SMC key。名称按芯片代际和精确 key 核对，保留尚未确认的标识；来源、冲突和展示与控制的边界见 [传感器语义说明](docs/sensor-semantics.md)。
+
 主可执行文件仍名为 `FanControl`，以 `--helper` 启动时成为 root daemon。helper 是同一可执行文件的独立签名副本，GUI 进程按需加载 Sparkle；helper 不允许链接任何仅位于 App bundle 内的动态框架。
 
 ## 安装与权限
@@ -74,8 +76,8 @@ MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --locked
 `package_app.sh` 默认构建 debug 版本，固定 `MACOSX_DEPLOYMENT_TARGET=14.0`，Cargo 输出位于 `target/debug/FanControl` 或 `target/release/FanControl`。脚本只接受 Apple Silicon 本机构建，`ARCHITECTURES` 只能为空或 `arm64`；不能用此参数宣称已经支持 Intel 或 universal 构建。App 产物默认位于 `dist/FanControl.app`。
 
 ```bash
-APP_VERSION=0.2.2 \
-BUILD_NUMBER=200 \
+APP_VERSION=0.2.3 \
+BUILD_NUMBER=203 \
 BUILD_CONFIGURATION=release \
 ARCHITECTURES=arm64 \
 ./script/package_app.sh
@@ -145,9 +147,9 @@ DMG 的本地构建检查不需要 Apple 公证账户：
 ```bash
 ./script/package_dmg.sh \
   dist/FanControl.app \
-  dist/FanControl-0.2.2.dmg \
-  "Fan Control 0.2.2"
-hdiutil verify dist/FanControl-0.2.2.dmg
+  dist/FanControl-0.2.3.dmg \
+  "Fan Control 0.2.3"
+hdiutil verify dist/FanControl-0.2.3.dmg
 ```
 
 本地 ad-hoc 签名和 DMG 校验不能证明网络下载后的 Gatekeeper 接受或正式更新安装已经通过；正式候选包必须重新完成这些验收。
