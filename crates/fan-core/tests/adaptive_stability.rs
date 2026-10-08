@@ -578,3 +578,156 @@ fn hot_calibration_boundary_keeps_its_cooling_floor_without_ramp_delay() {
         assert!(simulation.reading().comfort_demand_percent >= boundary_demand);
     }
 }
+
+#[test]
+fn tuning_orders_everyday_targets_without_calibration_and_keeps_live_bounds() {
+    let mut rpms = Vec::new();
+    for bias in [-10, 0, 10] {
+        let mut simulation = Simulation::with_config(Config {
+            fans: vec![FanConfig::adaptive(0)],
+            adaptive_tuning: AdaptiveTuning { bias },
+            ..Config::default()
+        });
+        simulation.temperature("cpu", Some(55.0));
+        simulation.temperature("body", Some(35.0));
+        simulation.snapshot.cpu_utilization_percent = Some(90.0);
+        simulation.advance(600);
+        rpms.push(simulation.applied_rpm().unwrap());
+        assert_eq!(
+            simulation.reading().comfort_status,
+            ComfortStatus::Uncalibrated
+        );
+        assert!((MINIMUM_RPM..=MAXIMUM_RPM).contains(&rpms[rpms.len() - 1]));
+    }
+    assert!(rpms[0] < rpms[1] && rpms[1] < rpms[2]);
+}
+
+#[test]
+fn tuning_updates_keep_pending_ack_heat_history_and_cooling_residence() {
+    let mut simulation = Simulation::new();
+    warm_under_load(&mut simulation, 600);
+    let now = simulation.now + 2.0;
+    let actions = simulation.poll(now);
+    let before = simulation.reading().clone();
+    let previous = simulation.applied_rpm().unwrap();
+    let mut config = simulation.controller.config().clone();
+    config.adaptive_tuning.bias = -10;
+    simulation.controller.replace_config(config).unwrap();
+    assert_eq!(simulation.reading(), &before);
+    simulation.accept(&actions);
+    simulation.tick(now);
+    assert_eq!(simulation.reading(), &before);
+    simulation.temperature("cpu", Some(45.0));
+    simulation.temperature("body", Some(30.0));
+    simulation.snapshot.cpu_utilization_percent = Some(0.0);
+    let first = simulation.step();
+    assert!(!returns_to_system(&first));
+    assert!(simulation.reading().heat_soak_percent > 0.0);
+    assert_normal_slew(previous, simulation.applied_rpm().unwrap(), 2.0);
+    let all = simulation.advance(1800);
+    assert!(returns_to_system(&all));
+}
+
+#[test]
+fn all_preferences_preserve_emergency_and_cold_idle_spike_behavior() {
+    for bias in -10..=10 {
+        let config = Config {
+            fans: vec![FanConfig::adaptive(0)],
+            adaptive_tuning: AdaptiveTuning { bias },
+            ..Config::default()
+        };
+        let mut simulation = Simulation::with_config(config.clone());
+        simulation.tick(0.0);
+        simulation.temperature("cpu", Some(85.0));
+        simulation.snapshot.cpu_utilization_percent = Some(95.0);
+        assert!(!simulation
+            .step()
+            .iter()
+            .any(|a| matches!(a.command, Command::SetRpm { .. })));
+        simulation.temperature("cpu", Some(45.0));
+        simulation.snapshot.cpu_utilization_percent = Some(0.0);
+        assert!(!simulation
+            .advance(60)
+            .iter()
+            .any(|a| matches!(a.command, Command::SetRpm { .. })));
+        for (hot, pressure, percent) in [
+            (96.0, ThermalPressure::Nominal, 80.0),
+            (45.0, ThermalPressure::Serious, 70.0),
+            (45.0, ThermalPressure::Critical, 100.0),
+        ] {
+            let mut urgent = Simulation::with_config(config.clone());
+            urgent.temperature("cpu", Some(hot));
+            urgent.snapshot.thermal_pressure = pressure;
+            let actions = urgent.tick(0.0);
+            let rpm = requested_rpm(&actions).unwrap();
+            assert!(
+                rpm >= (MINIMUM_RPM as f64 + percent / 100.0 * (MAXIMUM_RPM - MINIMUM_RPM) as f64)
+                    .ceil() as u32
+            );
+            assert_eq!(actions[0].reason, ActionReason::Emergency);
+        }
+    }
+}
+
+#[test]
+fn legacy_zero_preference_matches_explicit_zero_action_sequences() {
+    let mut old = serde_json::to_value(Config {
+        fans: vec![FanConfig::adaptive(0)],
+        ..Config::default()
+    })
+    .unwrap();
+    old.as_object_mut().unwrap().remove("adaptive_tuning");
+    let mut a = Simulation::with_config(Config::from_json(&old.to_string()).unwrap().config);
+    let mut b = Simulation::new();
+    for second in (0..=1800).step_by(2) {
+        let hot = (100..400).contains(&second) || (600..900).contains(&second);
+        for sim in [&mut a, &mut b] {
+            sim.temperature("cpu", Some(if hot { 75.0 } else { 45.0 }));
+            sim.temperature("body", Some(if hot { 45.0 } else { 30.0 }));
+            sim.snapshot.cpu_utilization_percent = Some(if hot { 90.0 } else { 0.0 });
+        }
+        assert_eq!(a.tick(f64::from(second)), b.tick(f64::from(second)));
+    }
+}
+
+#[test]
+fn preferences_do_not_change_manual_or_curve_actions_and_keep_stale_fallback() {
+    for fan in [
+        FanConfig {
+            fan_id: 0,
+            mode: ControlMode::Manual { rpm: 2500 },
+            curve: None,
+        },
+        FanConfig::balanced(0),
+    ] {
+        let mut baseline = Simulation::with_config(Config {
+            fans: vec![fan.clone()],
+            ..Config::default()
+        });
+        let mut tuned = Simulation::with_config(Config {
+            fans: vec![fan],
+            adaptive_tuning: AdaptiveTuning { bias: 10 },
+            ..Config::default()
+        });
+        for second in (0..=100).step_by(2) {
+            assert_eq!(
+                baseline.tick(f64::from(second)),
+                tuned.tick(f64::from(second))
+            );
+        }
+    }
+    for bias in [-10, 0, 10] {
+        let mut simulation = Simulation::with_config(Config {
+            fans: vec![FanConfig::adaptive(0)],
+            adaptive_tuning: AdaptiveTuning { bias },
+            ..Config::default()
+        });
+        warm_under_load(&mut simulation, 300);
+        let actions = simulation.controller.update(
+            &simulation.snapshot,
+            simulation.now + SNAPSHOT_MAXIMUM_AGE + 1.0,
+        );
+        assert!(returns_to_system(&actions));
+        assert_eq!(actions[0].reason, ActionReason::StaleSnapshot);
+    }
+}

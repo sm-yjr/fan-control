@@ -226,6 +226,7 @@ fn invalid_configuration_fails_closed_without_losing_valid_other_fans() {
     let mut config = Config {
         version: CONFIG_VERSION,
         thermal_policy: ThermalPolicy::default(),
+        adaptive_tuning: AdaptiveTuning::default(),
         fans: vec![FanConfig::balanced(0)],
     };
     config.fans[0].curve.as_mut().unwrap().hysteresis = f64::NAN;

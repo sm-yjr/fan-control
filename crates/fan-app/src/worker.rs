@@ -42,7 +42,11 @@ pub struct UiSnapshot {
 }
 pub enum WorkerCommand {
     Configure(FanConfig),
-    ConfigurePolicy(fan_core::ThermalPolicy),
+    ConfigurePolicy {
+        policy: fan_core::ThermalPolicy,
+        tuning: fan_core::AdaptiveTuning,
+        reply: Sender<Result<(), String>>,
+    },
     Reset,
     Uninstall,
     Uninstalled(fan_platform::HelperResponse),
@@ -682,18 +686,25 @@ fn run(
                 }
                 next_sample = Instant::now();
             }
-            Ok(WorkerCommand::ConfigurePolicy(policy)) => {
-                if installing && policy.comfort_target_celsius.is_some() {
-                    message = "正在安装或移除控制服务，请完成后再更新智能策略。".into();
-                    continue;
-                }
-                let result = configure_policy(&mut controller, policy, |candidate| {
-                    persistence.save(candidate)
-                });
-                message = match result {
-                    Ok(()) => "智能策略已保存，等待新采样评估。".into(),
-                    Err(error) => error,
+            Ok(WorkerCommand::ConfigurePolicy {
+                policy,
+                tuning,
+                reply,
+            }) => {
+                let result = if installing {
+                    Err("正在安装或移除控制服务，请完成后再更新智能策略。".into())
+                } else {
+                    configure_smart(&mut controller, policy, tuning, |candidate| {
+                        persistence.save(candidate)
+                    })
                 };
+                message = match &result {
+                    Ok(()) => "智能策略已保存，等待新采样评估。".into(),
+                    Err(error) => error.clone(),
+                };
+                // Publish the accepted config before acknowledging the UI, so reopening is consistent.
+                shared.lock().expect("worker snapshot lock").config = controller.config().clone();
+                let _ = reply.send(result);
                 next_sample = Instant::now();
             }
             Ok(WorkerCommand::Reset) => {
@@ -1206,13 +1217,28 @@ fn configure(
         controller.set_fan_config(fan).map_err(|e| e.to_string())
     }
 }
+#[cfg(test)]
 fn configure_policy(
     controller: &mut Controller,
     policy: fan_core::ThermalPolicy,
     save: impl FnOnce(&Config) -> Result<(), String>,
 ) -> Result<(), String> {
+    configure_smart(
+        controller,
+        policy,
+        controller.config().adaptive_tuning,
+        save,
+    )
+}
+fn configure_smart(
+    controller: &mut Controller,
+    policy: fan_core::ThermalPolicy,
+    tuning: fan_core::AdaptiveTuning,
+    save: impl FnOnce(&Config) -> Result<(), String>,
+) -> Result<(), String> {
     let mut candidate = controller.config().clone();
     candidate.thermal_policy = policy;
+    candidate.adaptive_tuning = tuning;
     candidate.validate().map_err(|error| error.to_string())?;
     save(&candidate)?;
     controller
@@ -1307,6 +1333,7 @@ mod tests {
         Controller::new(Config {
             version: fan_core::CONFIG_VERSION,
             thermal_policy: fan_core::ThermalPolicy::default(),
+            adaptive_tuning: fan_core::AdaptiveTuning::default(),
             fans: vec![FanConfig {
                 fan_id: 0,
                 mode: fan_core::ControlMode::Manual { rpm: 1800 },
@@ -1725,5 +1752,60 @@ mod tests {
             .any(|entry| fs::read(entry.path()).unwrap() == b"later malformed original");
         assert!(recovered);
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tuning_tests {
+    use super::*;
+    #[test]
+    fn smart_save_failure_invalid_and_repeated_save_preserve_modes_and_accepted_config() {
+        let mut controller = Controller::new(Config {
+            fans: vec![FanConfig::balanced(0), FanConfig::automatic(1)],
+            ..Config::default()
+        });
+        let original = controller.config().clone();
+        let tuning = fan_core::AdaptiveTuning { bias: 10 };
+        assert!(configure_smart(
+            &mut controller,
+            original.thermal_policy.clone(),
+            tuning,
+            |_| Err("disk full".into())
+        )
+        .is_err());
+        assert_eq!(controller.config(), &original);
+        assert!(configure_smart(
+            &mut controller,
+            original.thermal_policy.clone(),
+            fan_core::AdaptiveTuning { bias: 11 },
+            |_| panic!("invalid preference must not persist")
+        )
+        .is_err());
+        for _ in 0..2 {
+            configure_smart(
+                &mut controller,
+                original.thermal_policy.clone(),
+                tuning,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(controller.config().adaptive_tuning, tuning);
+            assert_eq!(controller.config().fans, original.fans);
+        }
+    }
+    #[test]
+    fn isolated_worker_acknowledges_after_publishing_accepted_preference() {
+        let worker = Worker::start(true);
+        let (tx, rx) = mpsc::channel();
+        worker
+            .send(WorkerCommand::ConfigurePolicy {
+                policy: fan_core::ThermalPolicy::default(),
+                tuning: fan_core::AdaptiveTuning { bias: -7 },
+                reply: tx,
+            })
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        assert_eq!(worker.snapshot().config.adaptive_tuning.bias, -7);
+        assert!(worker.shutdown());
     }
 }

@@ -1,4 +1,4 @@
-use crate::{ThermalPolicy, ABSOLUTE_MAXIMUM_RPM, THERMAL_DEMAND_KEY};
+use crate::{AdaptiveTuning, ThermalPolicy, ABSOLUTE_MAXIMUM_RPM, THERMAL_DEMAND_KEY};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -283,6 +283,8 @@ pub struct Config {
     pub fans: Vec<FanConfig>,
     #[serde(default)]
     pub thermal_policy: ThermalPolicy,
+    #[serde(default)]
+    pub adaptive_tuning: AdaptiveTuning,
 }
 
 impl Default for Config {
@@ -291,6 +293,7 @@ impl Default for Config {
             version: CONFIG_VERSION,
             fans: Vec::new(),
             thermal_policy: ThermalPolicy::default(),
+            adaptive_tuning: AdaptiveTuning::default(),
         }
     }
 }
@@ -335,6 +338,7 @@ impl Config {
             return Err(ConfigError::Invalid("最多配置 10 个风扇".into()));
         }
         self.thermal_policy.validate()?;
+        self.adaptive_tuning.validate()?;
         let mut ids = BTreeSet::new();
         for fan in &self.fans {
             if !ids.insert(fan.fan_id) {
@@ -354,7 +358,12 @@ impl Config {
         if input.len() > 1024 * 1024 {
             return Err(ConfigError::Invalid("配置文件超过 1 MiB".into()));
         }
-        let value: Value = serde_json::from_str(input)?;
+        let mut value: Value = serde_json::from_str(input)?;
+        // Decode this optional preference separately so a damaged bias cannot
+        // discard otherwise valid fan, curve or thermal settings.
+        let tuning = value
+            .as_object_mut()
+            .and_then(|config| config.remove("adaptive_tuning"));
         let mut warnings = Vec::new();
         let legacy = value.is_array();
         let mut config = if let Some(fans) = value.as_array() {
@@ -414,6 +423,25 @@ impl Config {
             return Err(ConfigError::UnsupportedVersion(config.version));
         }
         let mut migrated = legacy || version_one;
+        if let Some(tuning) = tuning {
+            let parsed = if tuning.is_object() {
+                serde_json::from_value::<AdaptiveTuning>(tuning).map_err(ConfigError::from)
+            } else {
+                Err(ConfigError::Invalid(
+                    "adaptive_tuning must be a JSON object".into(),
+                ))
+            };
+            match parsed.and_then(|tuning| {
+                tuning.validate()?;
+                Ok(tuning)
+            }) {
+                Ok(tuning) => config.adaptive_tuning = tuning,
+                Err(error) => {
+                    warnings.push(format!("散热偏好无效，已恢复默认：{error}"));
+                    migrated = true;
+                }
+            }
+        }
         if let Err(error) = config.thermal_policy.validate() {
             warnings.push(format!("热策略或表面校准无效，已禁用舒适估计：{error}"));
             config.thermal_policy = ThermalPolicy::default();

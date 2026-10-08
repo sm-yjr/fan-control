@@ -123,6 +123,15 @@ macro_rules! texts {
 }
 
 const CATALOG: &[Text] = texts![
+    ("默认", "Default"),
+    ("散热偏好必须为 -10...10", "Cooling preference must be -10...10"),
+    ("散热偏好", "Cooling preference"),
+    ("更安静", "Quieter"),
+    ("更凉快", "Cooler"),
+    ("正在保存智能策略…", "Saving smart cooling settings…"),
+    ("保存未获确认，请重试。", "Save was not confirmed. Please try again."),
+    ("21 档散热偏好，左侧更安静，右侧更凉快，默认在中间。保存后仅影响智能散热。", "21 cooling preference positions: quieter on the left, cooler on the right, default in the center. Applies to smart cooling after saving."),
+    ("无需校准。更安静会适度降低日常散热，更凉快会加强散热；高温保护始终优先。内部温度不代表机壳表面实测温度。保存偏好不会切换风扇模式。", "No calibration needed. Quieter slightly reduces everyday cooling; cooler increases it. High-temperature protection always takes priority. Internal readings are not measured case temperatures. Saving does not switch fan modes."),
     ("GPU 温度探头", "GPU temperature probe"),
     ("CPU 能效区温度", "CPU efficiency area temperature"),
     ("CPU 温度探头", "CPU temperature probe"),
@@ -648,6 +657,8 @@ macro_rules! templates {
     ($(($zh:literal, $en:literal, [$($kind:ident),*])),* $(,)?) => { &[$(Template { zh:$zh, en:$en, captures:&[$($kind),*] }),*] };
 }
 const TEMPLATES: &[Template] = templates![
+    ("散热偏好无效，已恢复默认：{0}", "Invalid cooling preference; restored the default: {0}", [O]),
+    ("保存失败：{0}", "Save failed: {0}", [O]),
     ("目标 {0} 转/分 · 硬件已确认 {1} 转/分", "Target {0} RPM · confirmed by hardware {1} RPM", [O,O]),
     ("目标 {0} 转/分 · 等待硬件确认", "Target {0} RPM · waiting for hardware confirmation", [O]),
     ("约 {0} 转/分", "about {0} RPM", [O]),
@@ -1246,6 +1257,10 @@ mod tests {
             (
                 "fan-core/adaptive.rs",
                 include_str!("../../fan-core/src/adaptive.rs"),
+            ),
+            (
+                "fan-core/tuning.rs",
+                include_str!("../../fan-core/src/tuning.rs"),
             ),
         ] {
             check_source_coverage(

@@ -184,6 +184,7 @@ struct Ui {
     editor: Option<Editor>,
     demo: bool,
     policy: Option<crate::policy::PolicyEditor>,
+    pending_policy_save: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     last_visible: bool,
     panel_opened: bool,
 }
@@ -235,6 +236,7 @@ define_class!(
                     ui.open_editor(self,None,false);ui.open_policy(self);ui.open_preferences(self);
                     ui.tabs.setSelectedTabViewItemIndex(3);
                     ui.details.verify_native_list(&ui.window);
+                    ui.verify_policy_flow(self);
                     smoke_done=true;
                 }
             }
@@ -477,6 +479,10 @@ define_class!(
         }
         #[unsafe(method(policy:))]
         fn policy(&self,_sender:Option<&AnyObject>) {if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){ui.open_policy(self);}}
+        #[unsafe(method(coolingPreference:))]
+        fn cooling_preference(&self,_sender:&NSSlider){if let Some(ui)=self.ivars().ui.borrow().as_ref(){if let Some(policy)=ui.policy.as_ref(){policy.preference_changed();}}}
+        #[unsafe(method(resetCoolingPreference:))]
+        fn reset_cooling_preference(&self,_sender:&NSButton){if let Some(ui)=self.ivars().ui.borrow().as_ref(){if let Some(policy)=ui.policy.as_ref(){policy.reset_preference();}}}
         #[unsafe(method(comfortToggle:))]
         fn comfort_toggle(&self,_sender:Option<&AnyObject>) {if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){if let Some(policy)=ui.policy.as_mut(){policy.refresh(&ui.worker.snapshot());}}}
         #[unsafe(method(recordCalibration:))]
@@ -491,7 +497,7 @@ define_class!(
         fn cancel_policy(&self,_sender:&NSButton){if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){ui.close_policy(self);}}
         #[unsafe(method(savePolicy:))]
         fn save_policy(&self,_sender:&NSButton) {
-            if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){if let Some(policy)=ui.policy.as_ref(){match policy.read(&ui.worker.snapshot().snapshot){Ok(saved)=>{let _=ui.worker.send(WorkerCommand::ConfigurePolicy(saved));policy.notice.setStringValue(&text("已保存，智能散热会按新目标运行。"));},Err(error)=>policy.notice.setStringValue(&text(&error))}}}
+            if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){ui.save_policy();}
         }
         #[unsafe(method(login:))]
         fn login(&self,sender:&NSSwitch) {
@@ -699,6 +705,7 @@ impl Ui {
             editor: None,
             demo,
             policy: None,
+            pending_policy_save: None,
             last_visible: true,
             panel_opened: false,
         };
@@ -766,7 +773,105 @@ impl Ui {
         let policy = crate::policy::PolicyEditor::new(self.window.mtm(), target, &state);
         self.smart_controller.setView(&policy.view);
         crate::form::fit(&self.smart_controller, &policy.view);
+        policy.set_saving(self.pending_policy_save.is_some(), state.installing);
         self.policy = Some(policy);
+    }
+    fn save_policy(&mut self) {
+        if self.pending_policy_save.is_some() {
+            return;
+        }
+        let Some(policy) = self.policy.as_ref() else {
+            return;
+        };
+        match policy.read(&self.worker.snapshot().snapshot) {
+            Ok(saved) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                match self.worker.send(WorkerCommand::ConfigurePolicy {
+                    policy: saved,
+                    tuning: policy.tuning(),
+                    reply: tx,
+                }) {
+                    Ok(()) => {
+                        self.pending_policy_save = Some(rx);
+                        policy.set_saving(true, false);
+                        policy.notice.setStringValue(&text("正在保存智能策略…"));
+                    }
+                    Err(error) => policy.notice.setStringValue(&text(&error)),
+                }
+            }
+            Err(error) => policy.notice.setStringValue(&text(&error)),
+        }
+    }
+    fn poll_policy_save(&mut self, target: &AnyObject) {
+        let result = self
+            .pending_policy_save
+            .as_ref()
+            .and_then(|rx| match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("保存未获确认，请重试。".into()))
+                }
+            });
+        if let Some(result) = result {
+            self.pending_policy_save = None;
+            if result.is_ok() {
+                self.build_policy(target);
+            }
+            if let Some(policy) = self.policy.as_ref() {
+                policy.notice.setStringValue(&text(&match result {
+                    Ok(()) => "智能策略已保存，等待新采样评估。".into(),
+                    Err(error) => format!("保存失败：{error}"),
+                }));
+            }
+        }
+    }
+    /// Only called in --ui-smoke, where the worker has no SMC/helper/storage access.
+    fn verify_policy_flow(&mut self, target: &AnyObject) {
+        assert!(self.demo);
+        self.policy
+            .as_ref()
+            .expect("smart page")
+            .verify_preference_controls();
+        let modes = self.worker.snapshot().config.fans;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_policy_save = Some(rx);
+        self.save_policy(); // A repeated request cannot replace an outstanding save.
+        assert!(self.pending_policy_save.is_some());
+        tx.send(Err("simulated disk full".into())).unwrap();
+        self.poll_policy_save(target);
+        assert!(self
+            .policy
+            .as_ref()
+            .unwrap()
+            .notice
+            .stringValue()
+            .to_string()
+            .contains("simulated disk full"));
+        assert_eq!(self.worker.snapshot().config.adaptive_tuning.bias, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_policy_save = Some(rx);
+        drop(tx);
+        self.poll_policy_save(target);
+        assert!(self.pending_policy_save.is_none());
+        self.policy.as_ref().unwrap().smoke_preference(-7);
+        self.save_policy();
+        self.save_policy();
+        self.close_policy(target); // Reopen before worker confirmation.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while self.pending_policy_save.is_some() && std::time::Instant::now() < deadline {
+            self.poll_policy_save(target);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(self.pending_policy_save.is_none());
+        assert_eq!(self.policy.as_ref().unwrap().tuning().bias, -7);
+        assert_eq!(self.worker.snapshot().config.fans, modes);
+        self.close_policy(target);
+        assert_eq!(self.policy.as_ref().unwrap().tuning().bias, -7);
+        self.policy.as_ref().unwrap().smoke_preference(10);
+        self.close_policy(target);
+        assert_eq!(self.policy.as_ref().unwrap().tuning().bias, -7);
+        println!("Smart preference: 21 native positions, reset, failure/disconnect feedback, duplicate save and reopen verified in demo mode");
     }
     fn close_policy(&mut self, target: &AnyObject) {
         self.build_policy(target);
@@ -782,9 +887,11 @@ impl Ui {
             let _ = self.worker.send(WorkerCommand::Visibility(visible));
             self.last_visible = visible;
         }
+        self.poll_policy_save(target);
         let state = self.worker.snapshot();
         if let Some(policy) = self.policy.as_mut() {
             policy.refresh(&state);
+            policy.set_saving(self.pending_policy_save.is_some(), state.installing);
         }
         let fresh = fresh(&state);
         let view = crate::presenter::present(&state, fresh, self.demo);

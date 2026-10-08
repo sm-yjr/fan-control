@@ -145,6 +145,9 @@ pub enum AdaptiveIntervention {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AdaptiveReading {
     pub demand_percent: f64,
+    /// After the everyday preference; safety floors are applied independently.
+    #[serde(default)]
+    pub adjusted_demand_percent: Option<f64>,
     /// 结合持续热负荷、负载前馈与温升趋势的平滑控制指标，单位不是瓦特。
     #[serde(default)]
     pub thermal_load_percent: f64,
@@ -331,6 +334,7 @@ impl AdaptiveEstimator {
         }
         AdaptiveReading {
             demand_percent: demand.clamp(0.0, 100.0),
+            adjusted_demand_percent: Some(demand.clamp(0.0, 100.0)),
             thermal_load_percent: self.thermal_load.clamp(0.0, 100.0),
             cpu_utilization_percent: load,
             load_sustained,

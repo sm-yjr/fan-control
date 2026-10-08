@@ -122,6 +122,7 @@ pub struct Controller {
     next_action_id: u64,
     estimator: ThermalEstimator,
     adaptive_estimator: AdaptiveEstimator,
+    effective_bias: f64,
     thermal: ThermalReading,
     last_sample_at: Option<f64>,
     suspended: bool,
@@ -135,6 +136,7 @@ impl Controller {
             config = Config {
                 version: CONFIG_VERSION,
                 thermal_policy: ThermalPolicy::default(),
+                adaptive_tuning: AdaptiveTuning::default(),
                 fans: config
                     .fans
                     .iter()
@@ -149,6 +151,7 @@ impl Controller {
             .map(|fan| (fan.fan_id, Runtime::default()))
             .collect();
         Self {
+            effective_bias: config.adaptive_tuning.normalized(),
             config,
             runtime,
             known_fans: BTreeSet::new(),
@@ -288,6 +291,23 @@ impl Controller {
                 &self.config.thermal_policy,
                 elapsed,
             );
+            self.effective_bias =
+                smooth_adaptive_bias(self.effective_bias, self.config.adaptive_tuning, elapsed);
+            let adaptive = &mut self.thermal.adaptive;
+            if self.effective_bias != 0.0 {
+                let daily = adaptive
+                    .thermal_load_percent
+                    .max(adaptive.heat_soak_percent);
+                let daily = if daily < 1.0 { 0.0 } else { daily };
+                let hottest = snapshot
+                    .hottest_silicon()
+                    .unwrap_or(90.0)
+                    .max(self.thermal.sustained_hotspot_temperature);
+                adaptive.adjusted_demand_percent = Some(
+                    tuned_adaptive_demand(daily, self.effective_bias, hottest)
+                        .max(adaptive.comfort_demand_percent),
+                );
+            }
             self.last_sample_at = Some(snapshot.sampled_at);
         } else if !fresh {
             self.thermal.available = false;
@@ -467,7 +487,9 @@ impl Controller {
                             adaptive.comfort_demand_percent,
                         ));
                     }
-                    let mut speed = adaptive.demand_percent;
+                    let mut speed = adaptive
+                        .adjusted_demand_percent
+                        .unwrap_or(adaptive.demand_percent);
                     if !adaptive.available && emergency.is_none() {
                         let since = *state.input_missing_since.get_or_insert(now);
                         state.status.status_reason = Some(ActionReason::MissingInput);
@@ -504,10 +526,13 @@ impl Controller {
                         speed = speed.max(35.0);
                     }
                     let cooling_active = state.adaptive_run_since.is_some();
-                    if cooling_active && speed >= ADAPTIVE_START_DEMAND_PERCENT {
+                    if cooling_active
+                        && speed.max(adaptive.demand_percent) >= ADAPTIVE_START_DEMAND_PERCENT
+                    {
                         state.adaptive_last_demand_at = Some(now);
                     }
                     let low_demand = speed <= ADAPTIVE_RELEASE_DEMAND_PERCENT
+                        && adaptive.demand_percent <= ADAPTIVE_RELEASE_DEMAND_PERCENT
                         && !adaptive.load_sustained
                         && adaptive.silicon_rise_celsius_per_second <= 0.15
                         && adaptive.comfort_demand_percent <= 0.0;

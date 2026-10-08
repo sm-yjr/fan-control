@@ -95,9 +95,21 @@ pub fn present(state: &UiSnapshot, fresh: bool, demo: bool) -> Presentation {
         },
         demand: if !fresh || !state.thermal.adaptive.available {
             "未知"
-        } else if state.thermal.adaptive.demand_percent < 35. {
+        } else if state
+            .thermal
+            .adaptive
+            .adjusted_demand_percent
+            .unwrap_or(state.thermal.adaptive.demand_percent)
+            < 35.
+        {
             "低"
-        } else if state.thermal.adaptive.demand_percent < 70. {
+        } else if state
+            .thermal
+            .adaptive
+            .adjusted_demand_percent
+            .unwrap_or(state.thermal.adaptive.demand_percent)
+            < 70.
+        {
             "中"
         } else {
             "高"
@@ -670,7 +682,10 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
     use fan_core::AdaptiveIntervention as Why;
     let reading = &state.thermal.adaptive;
     let available = fresh && reading.available;
-    let demand = available.then_some(reading.demand_percent.clamp(0., 100.));
+    let actual_demand = reading
+        .adjusted_demand_percent
+        .unwrap_or(reading.demand_percent);
+    let demand = available.then_some(actual_demand.clamp(0., 100.));
     let cooling_held = state.snapshot.fans.iter().any(|fan| {
         configured(state, fan.id) == ControlMode::Adaptive
             && fan.mode == HardwareMode::Forced
@@ -712,7 +727,7 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
             "温度或系统热压力过高，安全保护正在加大散热。"
         } else if cooling_held {
             "正在缓慢降低转速，待持续冷却后交还系统。"
-        } else if system_idle && reading.demand_percent < fan_core::ADAPTIVE_START_DEMAND_PERCENT {
+        } else if system_idle && actual_demand < fan_core::ADAPTIVE_START_DEMAND_PERCENT {
             "负载较低，风扇交给系统，保持安静。"
         } else {
             match reading.intervention {
