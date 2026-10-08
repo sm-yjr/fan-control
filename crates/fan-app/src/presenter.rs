@@ -115,7 +115,7 @@ pub fn present(state: &UiSnapshot, fresh: bool, demo: bool) -> Presentation {
         plan,
         plan_description: match plan {
             Plan::System => "由 macOS 决定何时启动风扇，与未安装本应用时一致。",
-            Plan::Smart => "负载持续升高时提前散热，减少降频；空闲时交还系统保持安静。",
+            Plan::Smart => "按持续热负载平稳散热，热量消散后交还系统。",
             Plan::Custom => "风扇按你设定的速度或温度曲线运行，过热时安全保护仍会接管。",
             Plan::Mixed => "各风扇设置不同，可在主窗口的“风扇”页分别调整。",
         },
@@ -514,7 +514,7 @@ impl FanChoice {
     pub fn explanation(self) -> &'static str {
         match self {
             Self::System => "由 macOS 决定何时启动风扇。",
-            Self::Smart => "负载升高时提前散热，空闲时交还系统。",
+            Self::Smart => "按持续热负载平稳散热，冷却后交还系统。",
             Self::Fixed => "始终保持所选速度，过热时安全保护仍会接管。",
             Self::Curve => "按散热需求自动调节，可编辑曲线。",
         }
@@ -671,6 +671,27 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
     let reading = &state.thermal.adaptive;
     let available = fresh && reading.available;
     let demand = available.then_some(reading.demand_percent.clamp(0., 100.));
+    let cooling_held = state.snapshot.fans.iter().any(|fan| {
+        configured(state, fan.id) == ControlMode::Adaptive
+            && fan.mode == HardwareMode::Forced
+            && state
+                .confirmed_targets
+                .get(&fan.id)
+                .is_some_and(Option::is_some)
+            && state.targets.get(&fan.id).is_some_and(Option::is_some)
+            && reading.demand_percent <= fan_core::ADAPTIVE_RELEASE_DEMAND_PERCENT
+            && reading.comfort_demand_percent <= 0.0
+    });
+    let smart_fans: Vec<_> = state
+        .snapshot
+        .fans
+        .iter()
+        .filter(|fan| configured(state, fan.id) == ControlMode::Adaptive)
+        .collect();
+    let system_idle = !smart_fans.is_empty()
+        && smart_fans.iter().all(|fan| {
+            fan.mode == HardwareMode::Automatic && state.targets.get(&fan.id) == Some(&None)
+        });
     SmartStatus {
         demand,
         level: match demand {
@@ -681,12 +702,24 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
         },
         reason: if !available {
             "正在等待温度数据。"
+        } else if state.safety_active
+            && fan_core::missing_input_safety_percent(
+                state.snapshot.thermal_pressure,
+                state.snapshot.hottest_silicon(),
+            )
+            .is_some()
+        {
+            "温度或系统热压力过高，安全保护正在加大散热。"
+        } else if cooling_held {
+            "正在缓慢降低转速，待持续冷却后交还系统。"
+        } else if system_idle && reading.demand_percent < fan_core::ADAPTIVE_START_DEMAND_PERCENT {
+            "负载较低，风扇交给系统，保持安静。"
         } else {
             match reading.intervention {
                 Why::Idle => "负载较低，风扇交给系统，保持安静。",
-                Why::Temperature => "正在按芯片温度调节风扇。",
-                Why::LoadFeedForward => "检测到持续高负载，提前加大散热以减少降频。",
-                Why::RisingTemperature => "温度正在上升，提前加大散热。",
+                Why::Temperature => "正在按持续热负载平稳调节风扇。",
+                Why::LoadFeedForward => "检测到持续高负载，正在逐步增加散热。",
+                Why::RisingTemperature => "检测到持续升温趋势，逐步增加散热。",
                 Why::HeatSoak => "机身积累了热量，保持适度散热帮助降温。",
                 Why::Comfort => "为让键盘区域保持舒适，正在加大散热。",
             }
@@ -1119,6 +1152,28 @@ mod tests {
         assert_eq!(temperature_level(50.), Tone::Good);
         assert_eq!(temperature_level(90.), Tone::Warning);
         assert_eq!(temperature_level(105.), Tone::Danger);
+    }
+
+    #[test]
+    fn smart_status_explains_cooling_residence_before_system_handback() {
+        let mut state = state(
+            vec![fan(0, 1500., HardwareMode::Forced)],
+            &[ControlMode::Adaptive],
+        );
+        state.thermal.adaptive.available = true;
+        state.targets.insert(0, Some(1500));
+        state.confirmed_targets.insert(0, Some(1500));
+        assert!(smart_status(&state, true).reason.contains("持续冷却"));
+        state.safety_active = true;
+        state.snapshot.thermal_pressure = ThermalPressure::Serious;
+        assert!(smart_status(&state, true).reason.contains("安全保护"));
+        state.safety_active = false;
+        state.snapshot.thermal_pressure = ThermalPressure::Nominal;
+        state.snapshot.fans[0].mode = HardwareMode::Automatic;
+        state.targets.insert(0, None);
+        state.confirmed_targets.insert(0, None);
+        assert!(smart_status(&state, true).reason.contains("交给系统"));
+        assert_eq!(smart_status(&state, false).reason, "正在等待温度数据。");
     }
 
     #[test]

@@ -73,20 +73,28 @@ fn sustained_cpu_load_intervenes_before_a_temperature_only_curve_and_before_pres
     let mut curve = controller(FanConfig::balanced(0));
     let mut adaptive_sample = sample(0.0, Some(45.0), None, Some(90.0));
     let mut curve_sample = adaptive_sample.clone();
-    for time in [0.0, 2.0, 4.0] {
+    let mut started = false;
+    for time in (0..=20).step_by(2) {
+        let time = time as f64;
         adaptive_sample.sampled_at = time;
         curve_sample.sampled_at = time;
         let early = tick(&mut adaptive, &mut adaptive_sample);
         let old = tick(&mut curve, &mut curve_sample);
         assert!(rpm(&old).is_none());
-        if time == 4.0 {
-            assert!(rpm(&early).unwrap() >= 3000);
+        if let Some(target) = rpm(&early) {
+            assert!(target >= 1800);
             assert_eq!(early[0].reason, ActionReason::AdaptivePerformance);
             assert_eq!(adaptive_sample.thermal_pressure, ThermalPressure::Nominal);
+            if !started {
+                assert!(time >= ADAPTIVE_LOAD_CONFIRMATION_SECONDS);
+                assert!(target < adaptive.fan_status(0).unwrap().desired_rpm.unwrap());
+            }
+            started = true;
         } else {
-            assert!(rpm(&early).is_none());
+            assert!(!started);
         }
     }
+    assert!(started);
 }
 #[test]
 fn one_load_spike_and_missing_load_do_not_become_sustained_work() {
@@ -123,10 +131,13 @@ fn gpu_prediction_is_not_masked_by_a_hotter_stable_cpu() {
 #[test]
 fn adaptive_taking_ownership_never_reduces_the_live_system_cooling_level() {
     let mut controller = controller(FanConfig::adaptive(0));
-    let mut state = sample(0.0, Some(65.0), None, None);
-    let first = tick(&mut controller, &mut state);
-    assert!(rpm(&first).unwrap() < 5000);
-    state.sampled_at = 2.0;
+    let mut state = sample(0.0, Some(80.0), None, None);
+    for time in (0..=30).step_by(2) {
+        state.sampled_at = time as f64;
+        tick(&mut controller, &mut state);
+    }
+    assert!(controller.fan_status(0).unwrap().applied_rpm.unwrap() < 5000);
+    state.sampled_at = 32.0;
     state.fans[0].mode = HardwareMode::Automatic;
     state.fans[0].current_rpm = Some(5000.0);
     let after_reset = tick(&mut controller, &mut state);
@@ -159,11 +170,15 @@ fn cpu_load_and_a_surface_proxy_cannot_authorize_control_without_silicon_safety_
     }
     state.sampled_at = 8.0;
     state.sensors[0].value = Some(80.0);
-    assert!(rpm(&tick(&mut controller, &mut state)).is_some());
-    state.sampled_at = 10.0;
+    for time in (8..=20).step_by(2) {
+        state.sampled_at = time as f64;
+        tick(&mut controller, &mut state);
+    }
+    assert!(controller.fan_status(0).unwrap().applied_rpm.is_some());
+    state.sampled_at = 22.0;
     state.sensors[0].value = None;
     assert!(tick(&mut controller, &mut state).is_empty());
-    state.sampled_at = 40.0;
+    state.sampled_at = 52.0;
     let actions = tick(&mut controller, &mut state);
     assert_eq!(actions[0].command, Command::SetAutomatic);
     assert_eq!(actions[0].reason, ActionReason::MissingInput);
@@ -172,8 +187,12 @@ fn cpu_load_and_a_surface_proxy_cannot_authorize_control_without_silicon_safety_
 fn stale_adaptive_samples_always_hand_back_even_with_high_cpu_load() {
     let mut controller = controller(FanConfig::adaptive(0));
     let mut state = sample(0.0, Some(80.0), None, Some(100.0));
-    tick(&mut controller, &mut state);
-    let actions = controller.update(&state, 16.0);
+    for time in (0..=30).step_by(2) {
+        state.sampled_at = time as f64;
+        tick(&mut controller, &mut state);
+    }
+    assert!(controller.fan_status(0).unwrap().applied_rpm.is_some());
+    let actions = controller.update(&state, 46.0);
     assert_eq!(actions[0].command, Command::SetAutomatic);
     assert_eq!(actions[0].reason, ActionReason::StaleSnapshot);
     assert!(!controller.thermal_reading().adaptive.available);
@@ -182,42 +201,48 @@ fn stale_adaptive_samples_always_hand_back_even_with_high_cpu_load() {
 fn cooling_residence_uses_a_successful_target_and_eventually_returns_to_system() {
     let mut controller = controller(FanConfig::adaptive(0));
     let mut state = sample(0.0, Some(45.0), None, Some(100.0));
-    for time in [0.0, 2.0, 4.0] {
-        state.sampled_at = time;
+    for time in (0..=120).step_by(2) {
+        state.sampled_at = time as f64;
         tick(&mut controller, &mut state);
     }
-    for time in (6..184).step_by(2) {
+    assert!(controller.fan_status(0).unwrap().applied_rpm.is_some());
+    let mut returned_at = None;
+    for time in (122..=600).step_by(2) {
         state.sampled_at = time as f64;
         state.cpu_utilization_percent = Some(0.0);
-        assert!(!tick(&mut controller, &mut state)
+        if tick(&mut controller, &mut state)
             .iter()
-            .any(|action| action.command == Command::SetAutomatic));
+            .any(|action| action.command == Command::SetAutomatic)
+        {
+            returned_at = Some(time as f64);
+            break;
+        }
     }
-    state.sampled_at = 184.0;
-    assert_eq!(
-        tick(&mut controller, &mut state)[0].command,
-        Command::SetAutomatic
-    );
+    assert!(returned_at.unwrap() >= 120.0 + ADAPTIVE_COOLING_RESIDENCE_SECONDS);
 }
 #[test]
 fn failed_adaptive_rpm_does_not_arm_a_cooling_residence() {
     let mut controller = controller(FanConfig::adaptive(0));
     let mut state = sample(0.0, Some(45.0), None, Some(100.0));
-    for time in [0.0, 2.0] {
+    for time in [0.0, 2.0, 4.0, 6.0] {
         state.sampled_at = time;
         tick(&mut controller, &mut state);
     }
-    state.sampled_at = 4.0;
-    let pending = controller.update(&state, 4.0);
+    state.sampled_at = 8.0;
+    let pending = controller.update(&state, 8.0);
     assert!(rpm(&pending).is_some());
-    assert!(controller.acknowledge(&pending[0], false, 4.0));
-    state.sampled_at = 6.0;
+    assert!(controller.acknowledge(&pending[0], false, 8.0));
+    state.sampled_at = 10.0;
     state.cpu_utilization_percent = Some(0.0);
     assert_eq!(
         tick(&mut controller, &mut state)[0].command,
         Command::SetAutomatic
     );
-    state.sampled_at = 8.0;
+    // 清除仍有效的平滑负载，只考察失败 ACK 是否错误地启动驻留。
+    let mut config = controller.config().clone();
+    config.thermal_policy.comfort_target_celsius = None;
+    controller.replace_config(config).unwrap();
+    state.sampled_at = 12.0;
     assert!(rpm(&tick(&mut controller, &mut state)).is_none());
 }
 #[test]
@@ -225,12 +250,17 @@ fn heat_soak_keeps_cooling_after_an_instantaneous_temperature_drop() {
     let mut controller = controller(FanConfig::adaptive(0));
     let mut state = sample(0.0, Some(90.0), None, None);
     state.sensors[2].value = Some(55.0);
-    tick(&mut controller, &mut state);
-    state.sampled_at = 2.0;
+    for time in (0..=180).step_by(2) {
+        state.sampled_at = time as f64;
+        tick(&mut controller, &mut state);
+    }
+    let hot_rpm = controller.fan_status(0).unwrap().applied_rpm.unwrap();
+    state.sampled_at = 182.0;
     state.sensors[0].value = Some(40.0);
     state.sensors[2].value = Some(30.0);
     tick(&mut controller, &mut state);
     assert!(controller.thermal_reading().adaptive.heat_soak_percent > 60.0);
+    assert!(hot_rpm.abs_diff(controller.fan_status(0).unwrap().applied_rpm.unwrap()) <= 70);
     assert_eq!(
         controller.thermal_reading().adaptive.intervention,
         AdaptiveIntervention::HeatSoak
@@ -291,8 +321,14 @@ fn comfort_cooling_is_independent_of_low_performance_load_and_remains_bounded() 
     state.sensors[2].value = Some(50.0);
     let actions = tick(&mut controller, &mut state);
     assert_eq!(actions[0].reason, ActionReason::SurfaceComfort);
-    assert!(rpm(&actions).unwrap() > 3000);
-    assert!(rpm(&actions).unwrap() <= 6000);
+    assert!(controller.fan_status(0).unwrap().desired_rpm.unwrap() > 3000);
+    assert!(rpm(&actions).unwrap() <= 1900);
+    for time in (2..=30).step_by(2) {
+        state.sampled_at = time as f64;
+        tick(&mut controller, &mut state);
+    }
+    assert!(controller.fan_status(0).unwrap().applied_rpm.unwrap() > 3000);
+    assert!(controller.fan_status(0).unwrap().applied_rpm.unwrap() <= 6000);
 }
 #[test]
 fn calibration_rejects_unmeasured_ranges_bad_correlation_and_unstable_offsets() {
@@ -405,9 +441,13 @@ fn crossing_the_hot_calibration_endpoint_never_reduces_its_cooling_and_recovers_
     let mut controller = Controller::new(upper_endpoint_configuration());
     let mut state = sample(0.0, Some(45.0), None, Some(0.0));
     state.sensors[2].value = Some(46.0);
-    assert_eq!(rpm(&tick(&mut controller, &mut state)), Some(4209));
+    for time in (0..=30).step_by(2) {
+        state.sampled_at = time as f64;
+        tick(&mut controller, &mut state);
+    }
+    assert_eq!(controller.fan_status(0).unwrap().applied_rpm, Some(4209));
     let endpoint_demand = controller.thermal_reading().adaptive.comfort_demand_percent;
-    for (time, proxy) in [(2.0, 46.1), (4.0, 47.0), (6.0, 49.0), (8.0, 50.0)] {
+    for (time, proxy) in [(32.0, 46.1), (34.0, 47.0), (36.0, 49.0), (38.0, 50.0)] {
         state.sampled_at = time;
         state.sensors[2].value = Some(proxy);
         let actions = tick(&mut controller, &mut state);
@@ -421,7 +461,7 @@ fn crossing_the_hot_calibration_endpoint_never_reduces_its_cooling_and_recovers_
         assert_eq!(reading.comfort_status, ComfortStatus::AboveCalibrationRange);
         assert!(reading.comfort_demand_percent >= endpoint_demand);
     }
-    state.sampled_at = 10.0;
+    state.sampled_at = 40.0;
     state.sensors[2].value = Some(44.0);
     let cooler = tick(&mut controller, &mut state);
     assert!(rpm(&cooler).unwrap() < 4209);

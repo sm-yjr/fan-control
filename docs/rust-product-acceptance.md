@@ -30,6 +30,10 @@
 
 配置测试必须读取旧 Swift `Codable` JSON fixtures，保留模式、UUID、控制点和自定义曲线；只有完全匹配旧默认值的配置可迁移默认曲线。验证损坏/不完整配置、写失败、原子保存、重启恢复与协议不兼容。测试数据使用虚构值，不包含个人配置或凭据。
 
+2026-10-08 智能散热策略调整：日常控制复用持续热负载，负载/温升前馈经 20 秒上升、90 秒下降的惯性模型；普通转速变化限制为 100 RPM/s 升、35 RPM/s 降，并以本轮时间限制单步。启动/退出阈值为 12%/5%；确认写入后，最近有效需求后至少 180 秒、连续低需求 60 秒且降到最低转速附近，才交还系统。芯片模型启动权重按实际采样建立，避免一次首读尖峰被误当持续蓄热。新增模拟覆盖短尖峰、启动热读数、负载阈值抖动、多分钟间歇负载、长负载骤冷、热机身冷芯片、GPU 趋势、最终归还与安全回退；紧急保护和校准高端下界仍立即响应。该策略的实机转速/噪声连续性、机身冷却时间、系统默认对照性能及表面温度效果 **尚未验证**，历史 build 207–213 的硬件结果不作为本次策略验收证据。本次没有变更 helper 协议或安装实现，协议仍为 8。
+
+本次本地验证：CLT＋Rust 主构建通过；`./script/test_rust.sh` 的 rustfmt、Clippy 与 213 项 tests 通过，4 项需显式启用的只读实机 probe 默认忽略。新增稳定性回归为 20 项。Unix socket 模拟测试在沙箱内因 `Operation not permitted` 失败，改在沙箱外完整复验通过；Sparkle 诊断同样在沙箱外通过。候选包为 `.build/smart-cooling-candidate/FanControl.app`，0.2.0 / build 214、arm64、`minos=14.0`，本地 ad-hoc 严格签名通过；App 外独立 helper 副本严格签名、`otool -L` 无 Sparkle/bundle 内依赖且与包内 helper SHA-256 一致。`./script/test_update_runtime.sh`、候选包自身 `--check-updater-runtime` 与项目要求的 shell 语法检查通过。证据保存在 `.build/smart-cooling-tests.log`、`.build/smart-cooling-package.log`、`.build/smart-cooling-update-runtime.log` 及候选目录的 `package-info.json` / `verification.json`。这些结果不计为真实硬件、macOS 14 实际运行或正式签名公证验收。
+
 ## 真实界面与用户体验
 
 以下项目均 **本轮按用户要求跳过，尚未进行真实 UI 验收**。后续需要在打包候选 App 中完成，并保存明确版本与操作结果；组件能编译或窗口进程存在不能替代。

@@ -66,6 +66,7 @@ struct Runtime {
     dirty: bool,
     needs_failure_hand_back: bool,
     last_write_at: Option<f64>,
+    last_control_at: Option<f64>,
     last_auto_request_at: Option<f64>,
     last_mode_reconcile_at: Option<f64>,
     mismatch_started_at: Option<f64>,
@@ -73,6 +74,8 @@ struct Runtime {
     off_since: Option<f64>,
     run_since: Option<f64>,
     adaptive_run_since: Option<f64>,
+    adaptive_last_demand_at: Option<f64>,
+    adaptive_low_demand_since: Option<f64>,
     input_missing_since: Option<f64>,
     safety_missing_since: Option<f64>,
     last_input: Option<f64>,
@@ -90,6 +93,7 @@ impl Default for Runtime {
             dirty: true,
             needs_failure_hand_back: false,
             last_write_at: None,
+            last_control_at: None,
             last_auto_request_at: None,
             last_mode_reconcile_at: None,
             mismatch_started_at: None,
@@ -97,6 +101,8 @@ impl Default for Runtime {
             off_since: None,
             run_since: None,
             adaptive_run_since: None,
+            adaptive_last_demand_at: None,
+            adaptive_low_demand_since: None,
             input_missing_since: None,
             safety_missing_since: None,
             last_input: None,
@@ -240,6 +246,8 @@ impl Controller {
         state.status.status_reason = None;
         if !matches!(config.mode, ControlMode::Adaptive) {
             state.adaptive_run_since = None;
+            state.adaptive_last_demand_at = None;
+            state.adaptive_low_demand_since = None;
         }
         if matches!(config.mode, ControlMode::Automatic) {
             state.off_since = None;
@@ -324,6 +332,8 @@ impl Controller {
                 .cloned()
                 .unwrap_or_else(|| FanConfig::automatic(id));
             let state = self.runtime.get_mut(&id).expect("known fan runtime");
+            let control_elapsed = state.last_control_at.map(|last| now - last).unwrap_or(1.0);
+            state.last_control_at = Some(now);
             if state.status.pending.is_some() {
                 continue;
             }
@@ -442,6 +452,7 @@ impl Controller {
             };
             let mut force = state.dirty;
             let mut comfort_floor = None;
+            let mut system_floor = None;
             let mut desired;
             match &config.mode {
                 ControlMode::Adaptive => {
@@ -489,10 +500,38 @@ impl Controller {
                     if snapshot.thermal_pressure == ThermalPressure::Fair {
                         speed = speed.max(35.0);
                     }
+                    let cooling_active = state.adaptive_run_since.is_some();
+                    if cooling_active && speed >= ADAPTIVE_START_DEMAND_PERCENT {
+                        state.adaptive_last_demand_at = Some(now);
+                    }
+                    let low_demand = speed <= ADAPTIVE_RELEASE_DEMAND_PERCENT
+                        && !adaptive.load_sustained
+                        && adaptive.silicon_rise_celsius_per_second <= 0.15
+                        && adaptive.comfort_demand_percent <= 0.0;
+                    if low_demand {
+                        state.adaptive_low_demand_since.get_or_insert(now);
+                    } else {
+                        state.adaptive_low_demand_since = None;
+                    }
                     let cooling_residence = state
-                        .adaptive_run_since
+                        .adaptive_last_demand_at
                         .is_some_and(|start| now - start < ADAPTIVE_COOLING_RESIDENCE_SECONDS);
-                    if speed <= 0.0 && !cooling_residence {
+                    let quiet_confirmed = state
+                        .adaptive_low_demand_since
+                        .is_some_and(|start| now - start >= ADAPTIVE_QUIET_CONFIRMATION_SECONDS);
+                    let at_idle_speed = state
+                        .status
+                        .applied_rpm
+                        .is_some_and(|rpm| rpm <= minimum.saturating_add(75));
+                    let remain_with_system = !cooling_active
+                        && speed < ADAPTIVE_START_DEMAND_PERCENT
+                        && adaptive.comfort_demand_percent <= 0.0;
+                    let cooling_complete = cooling_active
+                        && low_demand
+                        && !cooling_residence
+                        && quiet_confirmed
+                        && at_idle_speed;
+                    if remain_with_system || cooling_complete {
                         state.status.desired_rpm = None;
                         state.status.status_reason = Some(ActionReason::LowDemandSystem);
                         if state.dirty || fan.mode != HardwareMode::Automatic {
@@ -513,6 +552,10 @@ impl Controller {
                         }
                         continue;
                     }
+                    if cooling_active && low_demand {
+                        speed = 0.0;
+                        reason = ActionReason::AdaptiveHeatSoak;
+                    }
                     desired = percent_rpm(minimum, maximum, speed);
                     if !adaptive.available && emergency.is_some() {
                         desired = desired.max(state.status.applied_rpm.unwrap_or(0));
@@ -527,10 +570,8 @@ impl Controller {
                         )
                         .unwrap_or(0);
                         desired = desired.max(system);
-                        bypass = true;
-                    }
-                    if cooling_residence && speed <= 0.0 {
-                        reason = ActionReason::AdaptiveHeatSoak;
+                        // 保留系统实际散热下界，但普通目标仍须经过渐变。
+                        system_floor = Some(system);
                     }
                 }
                 ControlMode::Manual { rpm } => {
@@ -691,7 +732,11 @@ impl Controller {
                 .status
                 .applied_rpm
                 .unwrap_or(fan.current_rpm.unwrap_or(0.0) as u32);
-            let elapsed = state.last_write_at.map(|last| now - last).unwrap_or(1.0);
+            let elapsed = if matches!(config.mode, ControlMode::Adaptive) {
+                control_elapsed
+            } else {
+                state.last_write_at.map(|last| now - last).unwrap_or(1.0)
+            };
             let ramped = ramp_target(
                 desired,
                 previous,
@@ -700,14 +745,21 @@ impl Controller {
                 bypass,
                 previous == 0 && desired > 0,
             );
-            let ramped = ramped.max(comfort_floor.unwrap_or(0));
+            let ramped = ramped
+                .max(comfort_floor.unwrap_or(0))
+                .max(system_floor.unwrap_or(0));
             let target = validated_rpm(ramped as i64, fan.min_rpm, fan.max_rpm, desired == 0)
                 .expect("bounded target");
             let should_write = force
                 || state.status.applied_rpm.is_none()
                 || state.status.applied_rpm.is_some_and(|previous| {
                     previous != target
-                        && (previous.abs_diff(target) >= 75
+                        && (previous.abs_diff(target)
+                            >= if matches!(config.mode, ControlMode::Adaptive) {
+                                50
+                            } else {
+                                75
+                            }
                             || interval_passed(state.last_write_at, now, 5.0))
                 });
             state.status.status_reason = if state.status.safety_override {
@@ -790,6 +842,8 @@ impl Controller {
                 state.off_since = None;
                 state.run_since = None;
                 state.adaptive_run_since = None;
+                state.adaptive_last_demand_at = None;
+                state.adaptive_low_demand_since = None;
                 state.mismatch_started_at = None;
                 state.needs_failure_hand_back = false;
                 // 自定义模式在降级自动后，下一份有效采样重新应用配置。
@@ -801,6 +855,7 @@ impl Controller {
             Command::SetRpm { rpm, .. } => {
                 if adaptive && rpm > 0 {
                     state.adaptive_run_since.get_or_insert(now);
+                    state.adaptive_last_demand_at.get_or_insert(now);
                 }
                 if rpm == 0 {
                     state.off_since.get_or_insert(now);

@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 pub const ADAPTIVE_LOAD_CONFIRMATION_SECONDS: f64 = 4.0;
 pub const ADAPTIVE_PREDICTION_SECONDS: f64 = 20.0;
 pub const ADAPTIVE_COOLING_RESIDENCE_SECONDS: f64 = 180.0;
+pub const ADAPTIVE_DEMAND_RISE_SECONDS: f64 = 20.0;
+pub const ADAPTIVE_DEMAND_FALL_SECONDS: f64 = 90.0;
+pub const ADAPTIVE_START_DEMAND_PERCENT: f64 = 12.0;
+pub const ADAPTIVE_RELEASE_DEMAND_PERCENT: f64 = 5.0;
+pub const ADAPTIVE_QUIET_CONFIRMATION_SECONDS: f64 = 60.0;
 
 /// 用户设置是温度目标，不是硬件对键盘表面温度的保证。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,6 +145,9 @@ pub enum AdaptiveIntervention {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AdaptiveReading {
     pub demand_percent: f64,
+    /// 结合持续热负荷、负载前馈与温升趋势的平滑控制指标，单位不是瓦特。
+    #[serde(default)]
+    pub thermal_load_percent: f64,
     pub cpu_utilization_percent: Option<f64>,
     pub load_sustained: bool,
     pub silicon_rise_celsius_per_second: f64,
@@ -160,6 +168,7 @@ pub struct AdaptiveEstimator {
     cpu_trend: SiliconTrend,
     gpu_trend: SiliconTrend,
     load_elapsed: f64,
+    thermal_load: f64,
     heat_soak: f64,
 }
 #[derive(Debug, Clone, Default)]
@@ -242,9 +251,13 @@ impl AdaptiveEstimator {
             .into_iter()
             .flatten()
             .reduce(f64::max);
-        let temperature_demand = silicon
-            .map(|temperature| 70.0 * smooth(temperature, 55.0, 90.0))
-            .unwrap_or(0.0);
+        // 日常调节复用芯片 30 秒、机身 90 秒滤波后的整体热负荷。
+        // 原始芯片温度与严重热压力的紧急底线由 controller 独立处理。
+        let temperature_demand = if thermal.available {
+            thermal.demand_percent
+        } else {
+            0.0
+        };
         let feed_forward = if load_sustained {
             25.0 + 30.0 * smooth(load.unwrap_or(0.0), 65.0, 95.0)
         } else {
@@ -257,19 +270,19 @@ impl AdaptiveEstimator {
         } else {
             0.0
         };
+        let chassis_soak = if thermal.uses_chassis_sensor {
+            45.0 * smooth(thermal.chassis_temperature, 40.0, 55.0)
+        } else {
+            0.0
+        };
         let soak_input = if silicon.is_some() {
-            (70.0 * smooth(thermal.sustained_silicon_temperature, 65.0, 90.0)).max(
-                if thermal.uses_chassis_sensor {
-                    45.0 * smooth(thermal.chassis_temperature, 40.0, 55.0)
-                } else {
-                    0.0
-                },
-            )
+            (70.0 * smooth(thermal.sustained_silicon_temperature, 65.0, 90.0)).max(chassis_soak)
         } else {
             0.0
         };
         if reseed {
-            self.heat_soak = soak_input;
+            // 一次芯片热读数不能证明已有长期蓄热；机身节点可提供初始保守下界。
+            self.heat_soak = chassis_soak;
         } else {
             let constant = if soak_input > self.heat_soak {
                 30.0
@@ -278,11 +291,28 @@ impl AdaptiveEstimator {
             };
             self.heat_soak += (1.0 - (-dt / constant).exp()) * (soak_input - self.heat_soak);
         }
-        let (surface, comfort_status, comfort) = comfort_input(snapshot, policy);
-        let candidates = [
+        let (load_input, load_reason) = [
             (temperature_demand, AdaptiveIntervention::Temperature),
             (feed_forward, AdaptiveIntervention::LoadFeedForward),
             (trend_demand, AdaptiveIntervention::RisingTemperature),
+        ]
+        .into_iter()
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap();
+        let constant = if load_input > self.thermal_load {
+            ADAPTIVE_DEMAND_RISE_SECONDS
+        } else {
+            ADAPTIVE_DEMAND_FALL_SECONDS
+        };
+        self.thermal_load += (1.0 - (-dt / constant).exp()) * (load_input - self.thermal_load);
+        let load_reason = if self.thermal_load > load_input + 1.0 {
+            AdaptiveIntervention::HeatSoak
+        } else {
+            load_reason
+        };
+        let (surface, comfort_status, comfort) = comfort_input(snapshot, policy);
+        let candidates = [
+            (self.thermal_load, load_reason),
             (self.heat_soak, AdaptiveIntervention::HeatSoak),
             (comfort, AdaptiveIntervention::Comfort),
         ];
@@ -296,6 +326,7 @@ impl AdaptiveEstimator {
         }
         AdaptiveReading {
             demand_percent: demand.clamp(0.0, 100.0),
+            thermal_load_percent: self.thermal_load.clamp(0.0, 100.0),
             cpu_utilization_percent: load,
             load_sustained,
             silicon_rise_celsius_per_second: self

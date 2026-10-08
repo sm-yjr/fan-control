@@ -18,6 +18,7 @@ pub struct ThermalReading {
 #[derive(Debug, Clone, Default)]
 pub struct ThermalEstimator {
     sustained_silicon: Option<f64>,
+    silicon_weight: f64,
     filtered_chassis: Option<f64>,
     silicon_missing_elapsed: f64,
     chassis_missing_elapsed: f64,
@@ -79,18 +80,30 @@ impl ThermalEstimator {
             0.5
         };
         if reseed {
-            self.sustained_silicon = silicon;
+            self.sustained_silicon = None;
+            self.silicon_weight = 0.0;
             self.filtered_chassis = chassis;
             self.silicon_missing_elapsed = 0.0;
             self.chassis_missing_elapsed = 0.0;
         }
         if let Some(sample) = silicon {
             self.silicon_missing_elapsed = 0.0;
-            self.sustained_silicon = Some(low_pass(self.sustained_silicon, sample, dt, 30.0));
+            // 首样本只代表已观测的一小段时间，不能占满整个持续热源窗口。
+            // 权重建立后收敛到常规 30 秒低通；启动尖峰能被后续冷读纠正。
+            let decay = (-dt / 30.0).exp();
+            self.silicon_weight = decay * self.silicon_weight + (1.0 - decay);
+            self.sustained_silicon = Some(
+                self.sustained_silicon
+                    .map(|previous| {
+                        previous + (1.0 - decay) / self.silicon_weight * (sample - previous)
+                    })
+                    .unwrap_or(sample),
+            );
         } else {
             self.silicon_missing_elapsed += missing_elapsed;
             if self.silicon_missing_elapsed >= crate::MISSING_INPUT_MAXIMUM_HOLD {
                 self.sustained_silicon = None;
+                self.silicon_weight = 0.0;
             }
         }
         let previous_chassis = self.filtered_chassis;

@@ -61,7 +61,7 @@ MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --locked
 `package_app.sh` 默认构建 debug 版本，固定 `MACOSX_DEPLOYMENT_TARGET=14.0`，Cargo 输出位于 `target/debug/FanControl` 或 `target/release/FanControl`。脚本只接受 Apple Silicon 本机构建，`ARCHITECTURES` 只能为空或 `arm64`；不能用此参数宣称已经支持 Intel 或 universal 构建。App 产物默认位于 `dist/FanControl.app`。
 
 ```bash
-APP_VERSION=0.2.0 \
+APP_VERSION=0.2.1 \
 BUILD_NUMBER=200 \
 BUILD_CONFIGURATION=release \
 ARCHITECTURES=arm64 \
@@ -84,7 +84,9 @@ ARCHITECTURES=arm64 \
 
 每个风扇支持系统自动、智能热管理、固定转速和曲线控制，CPU/GPU 温度、热负荷和分组传感器详情，以及电池与电源状态。未检测到风扇、SMC 不可用、数据过期、转速上限未知与 helper 不可用必须使用不同状态说明，避免把检测中或失联状态呈现成正常停转。
 
-产品目标是更早识别持续发热，使高负载时的性能释放更稳定，同时允许调整键盘区域的体感目标。选择“智能热管理”并应用后，策略组合持续 CPU 负载前馈、CPU/GPU 各自的升温趋势、20 秒温度预测和机身热浸。持续负载需确认 4 秒，缓降保留 180 秒冷却驻留；CPU 利用率不可用时保留温度与趋势策略。GPU 负载目前仅从 GPU 温升响应，不提供 GPU 利用率读数。Apple 的 serious 热压力状态已经可能影响性能，因此它只作为保护信号，提前介入独立依赖负载与趋势。[Apple 热压力说明](https://developer.apple.com/documentation/foundation/processinfo/thermalstate-swift.enum/serious?language=objc)
+产品目标是更早识别持续发热，使高负载时的性能释放更稳定，同时允许调整键盘区域的体感目标。选择“智能热管理”并应用后，日常转速依据持续热负载：芯片温度经过 30 秒滤波、机身内部热节点经过 90 秒滤波，再结合持续 CPU 负载和 CPU/GPU 各自的升温趋势。负载或趋势需确认 4 秒，趋势预测向前看 20 秒；这些输入统一通过上升 20 秒、下降 90 秒的惯性模型，避免跟随芯片短时波动。CPU 利用率不可用时保留整体热负载与趋势策略；GPU 目前只提供温升响应，不提供利用率读数。
+
+普通智能调节每秒最多增加 100 RPM、降低 35 RPM；停转后只先达到硬件最小稳定转速，接管时保留系统当前转速下界，再逐步调整。启动需求阈值为 12%，退出阈值为 5%；近期有效散热需求后的冷却驻留为 180 秒，还须连续低需求至少 60 秒并降到最低转速附近，才交还系统决定是否停转。持续蓄热会延长冷却，长负载结束也保留这段过程。严重/危险热压力、原始芯片温度至少 96°C 的安全保护和校准高端的保守下界仍立即响应。时间和阈值是当前控制参数，噪声、表面温度与性能效果仍需同机实测。
 
 “体感目标”默认 38°C，可在 30–45°C 内微调。校准需要外部温度计在相同键盘区域实测两个稳定状态，再同时记录内部参考传感器；内部温度必须至少相差 3°C。校准限定于本机、指定传感器及已测温度范围，界面显示“表面估计”，不会把内部传感器值标成键盘实测温度。校准缺失、机型身份不符或传感器失效时暂停体感估计与调节，继续性能与安全策略。高于校准范围时停止估计并保留校准高端的保守散热下界，防止继续升温反而降速；低于范围时停止估计并按性能策略冷却。校准不保证表面恒温，达到目标的能力还取决于室温、负载与散热硬件。固定 RPM 与曲线是独立的高级调节，体感目标仅用于智能模式。
 
@@ -128,9 +130,9 @@ DMG 的本地构建检查不需要 Apple 公证账户：
 ```bash
 ./script/package_dmg.sh \
   dist/FanControl.app \
-  dist/FanControl-0.2.0.dmg \
-  "Fan Control 0.2.0"
-hdiutil verify dist/FanControl-0.2.0.dmg
+  dist/FanControl-0.2.1.dmg \
+  "Fan Control 0.2.1"
+hdiutil verify dist/FanControl-0.2.1.dmg
 ```
 
 本地 ad-hoc 签名和 DMG 校验不能证明网络下载后的 Gatekeeper 接受或正式更新安装已经通过；正式候选包必须重新完成这些验收。

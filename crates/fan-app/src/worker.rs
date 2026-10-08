@@ -1175,7 +1175,7 @@ fn reason_label(reason: ActionReason) -> &'static str {
         ActionReason::AdaptivePerformance => "持续负载，提前提高散热",
         ActionReason::AdaptiveTrend => "芯片温度趋势预测，提前散热",
         ActionReason::AdaptiveHeatSoak => "持续热浸或冷却驻留",
-        ActionReason::AdaptiveTemperature => "智能温度调节",
+        ActionReason::AdaptiveTemperature => "持续热负载调节",
         ActionReason::SurfaceComfort => "已校准舒适策略",
         ActionReason::Emergency => "安全保护已接管",
         ActionReason::MissingInput | ActionReason::StaleSnapshot => "数据失效，恢复系统自动",

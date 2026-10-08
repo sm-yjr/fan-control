@@ -1,5 +1,8 @@
 use crate::{ControlMode, ThermalPressure};
 
+pub const ADAPTIVE_RAMP_UP_RPM_PER_SECOND: f64 = 100.0;
+pub const ADAPTIVE_RAMP_DOWN_RPM_PER_SECOND: f64 = 35.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PollingActivity {
     Automatic,
@@ -36,18 +39,30 @@ pub fn ramp_target(
 ) -> u32 {
     if matches!(mode, ControlMode::Manual { .. })
         || bypass
-        || starting_from_stopped
+        || (starting_from_stopped && !matches!(mode, ControlMode::Adaptive))
         || previous == requested
     {
         return requested;
     }
-    let elapsed = if elapsed.is_finite() {
+    let adaptive = matches!(mode, ControlMode::Adaptive);
+    let elapsed = if adaptive {
+        if elapsed.is_finite() {
+            elapsed.clamp(0.0, 5.0)
+        } else {
+            0.0
+        }
+    } else if elapsed.is_finite() {
         elapsed.max(1.0)
     } else {
         1.0
     };
-    let delta =
-        ((if requested > previous { 350.0 } else { 250.0 }) * elapsed).min(u32::MAX as f64) as u32;
+    let rate = match (adaptive, requested > previous) {
+        (true, true) => ADAPTIVE_RAMP_UP_RPM_PER_SECOND,
+        (true, false) => ADAPTIVE_RAMP_DOWN_RPM_PER_SECOND,
+        (false, true) => 350.0,
+        (false, false) => 250.0,
+    };
+    let delta = (rate * elapsed).min(u32::MAX as f64) as u32;
     if requested > previous {
         requested.min(previous.saturating_add(delta))
     } else {

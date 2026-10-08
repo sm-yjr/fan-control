@@ -127,7 +127,7 @@ impl PolicyEditor {
         view.addArrangedSubview(&hero_box);
         let how = caption(
             mtm,
-            "智能散热在负载持续升高或温度上升时提前加大风扇，减少降频；负载降低后交还系统，保持安静。",
+            "智能散热综合持续负载、机身蓄热和温升趋势平稳调节风扇；短时温度波动不急升急降，持续冷却后交还系统。",
             CONTENT,
         );
         view.addArrangedSubview(&how);

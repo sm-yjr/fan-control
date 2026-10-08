@@ -30,6 +30,20 @@ fn spike_rejection_and_sustained_heat_are_distinct() {
 }
 
 #[test]
+fn an_initial_hot_sample_does_not_claim_a_full_window_of_sustained_heat() {
+    let mut estimator = ThermalEstimator::default();
+    estimator.update(Some(90.0), Some(30.0), None, ThermalPressure::Nominal, 0.0);
+    let next = estimator.update(Some(45.0), Some(30.0), None, ThermalPressure::Nominal, 2.0);
+    assert!(next.sustained_silicon_temperature < 60.0);
+    for _ in 0..30 {
+        let reading = estimator.update(Some(45.0), Some(30.0), None, ThermalPressure::Nominal, 2.0);
+        assert!(reading.demand_percent < ADAPTIVE_START_DEMAND_PERCENT);
+    }
+    let steady = estimator.update(Some(90.0), Some(30.0), None, ThermalPressure::Nominal, 60.0);
+    close(steady.sustained_silicon_temperature, 90.0);
+}
+
+#[test]
 fn enclosure_mass_cools_slowly_and_wake_reseeds() {
     let mut estimator = ThermalEstimator::default();
     let mut hot = ThermalReading::default();
