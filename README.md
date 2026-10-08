@@ -5,7 +5,7 @@
 
 Fan Control 是面向 macOS 14+、Apple Silicon 的菜单栏风扇控制工具。项目正在迁移到 Rust：热模型、控制策略、配置、Apple SMC 和 privileged helper 使用 Rust；界面通过 `objc2` 使用 AppKit 原生系统控件。主构建已经切换到 Cargo，旧 Swift 源码暂时保留作为行为和配置兼容性对照，不参与新应用构建，完成迁移验收后再移除。
 
-当前分发使用 Rust 实现。构建成功或自动化测试通过，只证明对应代码与产物检查通过；各型号真实风扇控制、睡眠恢复与实际更新的验证范围见 [Rust 产品验收清单](docs/rust-product-acceptance.md)。迁移审查见 [独立审查报告](docs/rust-migration-review.md)，智能散热 hotfix 见 [0.2.2 发布说明](docs/releases/0.2.2.md)。下载以对应 Release 的产物和说明为准。
+当前分发使用 Rust 实现。构建成功或自动化测试通过，只证明对应代码与产物检查通过；各型号真实风扇控制、睡眠恢复与实际更新的验证范围见 [Rust 产品验收清单](docs/rust-product-acceptance.md)。迁移审查见 [独立审查报告](docs/rust-migration-review.md)，0.2.2 智能散热 hotfix 见 [0.2.2 发布说明](docs/releases/0.2.2.md)，本轮温度详情修复见 [0.2.3 发布说明](docs/releases/0.2.3.md)。下载以对应 Release 的产物和说明为准。
 
 > [!WARNING]
 > 风扇控制会直接修改硬件状态。错误的曲线可能导致过热、降频、数据丢失或硬件损坏。首次使用保持系统自动模式；选择自定义模式时保留温度余量。软件按 GPL-3.0 的无担保条款提供。
