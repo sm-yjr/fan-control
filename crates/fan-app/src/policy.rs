@@ -22,6 +22,9 @@ pub struct PolicyEditor {
     use_smart: Retained<NSButton>,
     comfort: crate::form::Row,
     pub notice: Retained<NSTextField>,
+    preference: Retained<NSSlider>,
+    preference_value: Retained<NSTextField>,
+    preference_reset: Retained<NSButton>,
     enabled: Retained<NSSwitch>,
     target: Retained<NSTextField>,
     source: Retained<NSPopUpButton>,
@@ -132,6 +135,56 @@ impl PolicyEditor {
         );
         view.addArrangedSubview(&how);
         view.setCustomSpacing_afterView(crate::form::SECTION_GAP, &how);
+
+        view.addArrangedSubview(&section_title(mtm, "散热偏好"));
+        let preference = unsafe {
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(
+                f64::from(state.config.adaptive_tuning.bias),
+                -10.,
+                10.,
+                Some(delegate),
+                Some(sel!(coolingPreference:)),
+                mtm,
+            )
+        };
+        preference.setNumberOfTickMarks(21);
+        preference.setAllowsTickMarkValuesOnly(true);
+        preference
+            .widthAnchor()
+            .constraintEqualToConstant(CONTENT - 24.)
+            .setActive(true);
+        preference.setAccessibilityLabel(Some(&text("散热偏好")));
+        preference.setAccessibilityHelp(Some(&text(
+            "21 档散热偏好，左侧更安静，右侧更凉快，默认在中间。保存后仅影响智能散热。",
+        )));
+        let preference_value = styled_label(mtm, "默认", tokens::BODY, true, false, None);
+        let preference_reset = button(mtm, delegate, "恢复默认", sel!(resetCoolingPreference:));
+        let preference_group = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 8.);
+        preference_group.addArrangedSubview(&preference);
+        let labels = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
+        labels.addArrangedSubview(&styled_label(
+            mtm,
+            "更安静",
+            tokens::CAPTION,
+            false,
+            true,
+            None,
+        ));
+        labels.addArrangedSubview(&spacer(mtm));
+        labels.addArrangedSubview(&preference_value);
+        labels.addArrangedSubview(&spacer(mtm));
+        labels.addArrangedSubview(&styled_label(
+            mtm,
+            "更凉快",
+            tokens::CAPTION,
+            false,
+            true,
+            None,
+        ));
+        preference_group.addArrangedSubview(&labels);
+        preference_group.addArrangedSubview(&preference_reset);
+        view.addArrangedSubview(&group(mtm, &[&preference_group]));
+        view.addArrangedSubview(&caption(mtm, "无需校准。更安静会适度降低日常散热，更凉快会加强散热；高温保护始终优先。内部温度不代表机壳表面实测温度。保存偏好不会切换风扇模式。", CONTENT));
 
         // Optional comfort target, only active after a two-point calibration.
         view.addArrangedSubview(&section_title(mtm, "键盘体感目标（可选）"));
@@ -291,6 +344,9 @@ impl PolicyEditor {
             use_smart,
             comfort,
             notice,
+            preference,
+            preference_value,
+            preference_reset,
             enabled,
             target,
             source,
@@ -303,6 +359,7 @@ impl PolicyEditor {
             machine_id: state.snapshot.machine_id.clone(),
             save,
         };
+        editor.preference_changed();
         editor.refresh(state);
         editor
     }
@@ -429,6 +486,61 @@ impl PolicyEditor {
         self.target
             .setEnabled(self.enabled.state() == NSControlStateValueOn);
         self.save.setEnabled(!state.installing);
+    }
+    pub fn tuning(&self) -> fan_core::AdaptiveTuning {
+        fan_core::AdaptiveTuning {
+            bias: self.preference.doubleValue().round().clamp(-10., 10.) as i8,
+        }
+    }
+    pub fn preference_changed(&self) {
+        let bias = self.tuning().bias;
+        self.preference.setDoubleValue(f64::from(bias));
+        let label = if bias == 0 {
+            crate::i18n::translate("默认")
+        } else {
+            format!(
+                "{} {}",
+                crate::i18n::translate(if bias < 0 { "更安静" } else { "更凉快" }),
+                bias.abs()
+            )
+        };
+        self.preference_value.setStringValue(&raw_text(&label));
+        self.preference_reset.setEnabled(bias != 0);
+    }
+    pub fn reset_preference(&self) {
+        self.preference.setDoubleValue(0.);
+        self.preference_changed();
+    }
+    pub fn set_saving(&self, saving: bool, installing: bool) {
+        self.save.setEnabled(!saving && !installing);
+        self.preference.setEnabled(!saving);
+        self.preference_reset
+            .setEnabled(!saving && self.tuning().bias != 0);
+        self.enabled.setEnabled(!saving);
+        self.target
+            .setEnabled(!saving && self.enabled.state() == NSControlStateValueOn);
+    }
+    /// Diagnostic-only interaction; the smoke caller uses the simulated worker.
+    pub fn smoke_preference(&self, bias: i8) {
+        self.preference.setDoubleValue(f64::from(bias));
+        self.preference_changed();
+    }
+    /// Called only by the isolated --ui-smoke diagnostic.
+    pub fn verify_preference_controls(&self) {
+        assert_eq!(self.preference.numberOfTickMarks(), 21);
+        assert!(self.preference.allowsTickMarkValuesOnly());
+        assert!(self.preference.isEnabled());
+        let original = self.preference.doubleValue();
+        for bias in -10..=10 {
+            self.preference.setDoubleValue(f64::from(bias));
+            self.preference_changed();
+            assert_eq!(self.tuning().bias, bias);
+        }
+        self.reset_preference();
+        assert_eq!(self.tuning().bias, 0);
+        assert!(!self.preference_reset.isEnabled());
+        self.preference.setDoubleValue(original);
+        self.preference_changed();
     }
     pub fn record(&self, index: usize, state: &UiSnapshot) -> Result<(), String> {
         if index >= 2 {

@@ -43,6 +43,7 @@ fn controller(config: FanConfig) -> Controller {
     Controller::new(Config {
         version: CONFIG_VERSION,
         thermal_policy: ThermalPolicy::default(),
+        adaptive_tuning: AdaptiveTuning::default(),
         fans: vec![config],
     })
 }
@@ -443,6 +444,7 @@ fn sparse_fan_ids_are_addressed_by_id_and_invalid_ids_are_ignored() {
     let mut controller = Controller::new(Config {
         version: CONFIG_VERSION,
         thermal_policy: ThermalPolicy::default(),
+        adaptive_tuning: AdaptiveTuning::default(),
         fans: vec![FanConfig {
             fan_id: 2,
             mode: ControlMode::Manual { rpm: 3000 },
@@ -499,6 +501,7 @@ fn invalid_user_edits_do_not_mutate_a_running_configuration() {
         .replace_config(Config {
             version: 999,
             thermal_policy: ThermalPolicy::default(),
+            adaptive_tuning: AdaptiveTuning::default(),
             fans: vec![]
         })
         .is_err());
