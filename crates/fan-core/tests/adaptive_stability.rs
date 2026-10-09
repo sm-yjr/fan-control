@@ -629,27 +629,31 @@ fn tuning_updates_keep_pending_ack_heat_history_and_cooling_residence() {
 }
 
 #[test]
-fn all_preferences_preserve_emergency_and_cold_idle_spike_behavior() {
+fn all_preferences_preserve_emergency_and_neutral_or_quieter_spike_behavior() {
     for bias in -10..=10 {
         let config = Config {
             fans: vec![FanConfig::adaptive(0)],
             adaptive_tuning: AdaptiveTuning { bias },
             ..Config::default()
         };
-        let mut simulation = Simulation::with_config(config.clone());
-        simulation.tick(0.0);
-        simulation.temperature("cpu", Some(85.0));
-        simulation.snapshot.cpu_utilization_percent = Some(95.0);
-        assert!(!simulation
-            .step()
-            .iter()
-            .any(|a| matches!(a.command, Command::SetRpm { .. })));
-        simulation.temperature("cpu", Some(45.0));
-        simulation.snapshot.cpu_utilization_percent = Some(0.0);
-        assert!(!simulation
-            .advance(60)
-            .iter()
-            .any(|a| matches!(a.command, Command::SetRpm { .. })));
+        // Positive offsets intentionally make short warming more likely to cross the takeover threshold.
+        // Neutral/quieter retain their previous spike behavior; all biases retain protection.
+        if bias <= 0 {
+            let mut simulation = Simulation::with_config(config.clone());
+            simulation.tick(0.0);
+            simulation.temperature("cpu", Some(85.0));
+            simulation.snapshot.cpu_utilization_percent = Some(95.0);
+            assert!(!simulation
+                .step()
+                .iter()
+                .any(|a| matches!(a.command, Command::SetRpm { .. })));
+            simulation.temperature("cpu", Some(45.0));
+            simulation.snapshot.cpu_utilization_percent = Some(0.0);
+            assert!(!simulation
+                .advance(60)
+                .iter()
+                .any(|a| matches!(a.command, Command::SetRpm { .. })));
+        }
         for (hot, pressure, percent) in [
             (96.0, ThermalPressure::Nominal, 80.0),
             (45.0, ThermalPressure::Serious, 70.0),
@@ -729,5 +733,173 @@ fn preferences_do_not_change_manual_or_curve_actions_and_keep_stale_fallback() {
         );
         assert!(returns_to_system(&actions));
         assert_eq!(actions[0].reason, ActionReason::StaleSnapshot);
+    }
+}
+
+#[test]
+fn positive_idle_offsets_obey_existing_start_and_release_hysteresis_without_churn() {
+    for bias in 1..=10 {
+        let config = Config {
+            fans: vec![FanConfig::adaptive(0)],
+            adaptive_tuning: AdaptiveTuning { bias },
+            ..Config::default()
+        };
+        let mut cold = Simulation::with_config(config.clone());
+        let first = cold.tick(0.0);
+        let later = cold.advance(600);
+        assert!(
+            (cold.reading().adjusted_demand_percent.unwrap() - 2.0 * f64::from(bias)).abs() < 1e-10
+        );
+        if bias >= 6 {
+            assert!(requested_rpm(&first).is_some());
+            assert!(!returns_to_system(&later));
+            assert_eq!(cold.snapshot.fans[0].mode, HardwareMode::Forced);
+        } else {
+            assert!(requested_rpm(&first).is_none());
+            assert!(requested_rpm(&later).is_none());
+            assert_eq!(cold.snapshot.fans[0].mode, HardwareMode::Automatic);
+        }
+        let mut warmed = Simulation::with_config(config);
+        warm_under_load(&mut warmed, 600);
+        warmed.temperature("cpu", Some(45.0));
+        warmed.temperature("body", Some(30.0));
+        warmed.snapshot.cpu_utilization_percent = Some(0.0);
+        let cooled = warmed.advance(1800);
+        if bias <= 2 {
+            assert!(returns_to_system(&cooled));
+            assert_eq!(warmed.snapshot.fans[0].mode, HardwareMode::Automatic);
+            assert!(requested_rpm(&warmed.advance(600)).is_none());
+        } else {
+            assert!(!returns_to_system(&cooled));
+            assert_eq!(warmed.snapshot.fans[0].mode, HardwareMode::Forced);
+        }
+    }
+}
+
+#[test]
+fn neutral_after_strong_cooler_offset_can_complete_confirmed_handback() {
+    let mut simulation = Simulation::with_config(Config {
+        fans: vec![FanConfig::adaptive(0)],
+        adaptive_tuning: AdaptiveTuning { bias: 10 },
+        ..Config::default()
+    });
+    simulation.tick(0.0);
+    simulation.advance(120);
+    assert_eq!(simulation.snapshot.fans[0].mode, HardwareMode::Forced);
+    let mut config = simulation.controller.config().clone();
+    config.adaptive_tuning.bias = 0;
+    simulation.controller.replace_config(config).unwrap();
+    let cooled = simulation.advance(1200);
+    assert!(returns_to_system(&cooled));
+    assert_eq!(simulation.snapshot.fans[0].mode, HardwareMode::Automatic);
+    assert!(requested_rpm(&simulation.advance(600)).is_none());
+}
+
+#[test]
+fn positive_offsets_map_independent_dual_fan_ranges_and_return_without_churn() {
+    for bias in 1..=10 {
+        let mut sim = Simulation::with_config(Config {
+            fans: vec![FanConfig::adaptive(0), FanConfig::adaptive(1)],
+            adaptive_tuning: AdaptiveTuning { bias },
+            ..Config::default()
+        });
+        sim.snapshot.fan_count = Some(2.);
+        sim.snapshot.fans.push(Fan {
+            id: 1,
+            name: "Second simulated fan".into(),
+            min_rpm: Some(800.),
+            max_rpm: Some(4500.),
+            current_rpm: Some(0.),
+            mode: HardwareMode::Automatic,
+        });
+        let mut previous = [None, None];
+        let mut automatic = [0, 0];
+        for second in (0..=2400).step_by(2) {
+            if second == 600 {
+                let mut cfg = sim.controller.config().clone();
+                cfg.adaptive_tuning.bias = 0;
+                sim.controller.replace_config(cfg).unwrap();
+            }
+            let actions = sim.poll(second as f64);
+            for action in &actions {
+                let i = action.fan_id as usize;
+                let (lo, hi) = if i == 0 { (1500, 6000) } else { (800, 4500) };
+                assert!(sim.controller.acknowledge(action, true, sim.now));
+                let fan = &mut sim.snapshot.fans[i];
+                match action.command {
+                    Command::SetRpm { rpm, .. } => {
+                        assert!((lo..=hi).contains(&rpm));
+                        if let Some((last, at)) = previous[i] {
+                            assert_normal_slew(last, rpm, second as f64 - at);
+                        }
+                        previous[i] = Some((rpm, second as f64));
+                        fan.mode = HardwareMode::Forced;
+                        fan.current_rpm = Some(rpm as f64);
+                    }
+                    Command::SetAutomatic => {
+                        if fan.mode == HardwareMode::Forced {
+                            automatic[i] += 1;
+                        }
+                        fan.mode = HardwareMode::Automatic;
+                        fan.current_rpm = Some(0.);
+                        previous[i] = None;
+                    }
+                }
+            }
+            if second == 598 {
+                assert_eq!(
+                    sim.reading().adjusted_demand_percent,
+                    Some(bias as f64 * 2.)
+                );
+                for (i, fan) in sim.snapshot.fans.iter().enumerate() {
+                    assert_eq!(fan.mode == HardwareMode::Forced, bias >= 6);
+                    if bias >= 6 {
+                        let (lo, hi) = if i == 0 {
+                            (1500., 6000.)
+                        } else {
+                            (800., 4500.)
+                        };
+                        let expected = (lo + bias as f64 * 0.02 * (hi - lo)).ceil() as u32;
+                        assert_eq!(
+                            sim.controller.fan_status(fan.id).unwrap().desired_rpm,
+                            Some(expected)
+                        );
+                    }
+                }
+            }
+            if second > 1800 {
+                assert!(actions
+                    .iter()
+                    .all(|a| !matches!(a.command, Command::SetRpm { .. })));
+            }
+        }
+        assert!(sim
+            .snapshot
+            .fans
+            .iter()
+            .all(|f| f.mode == HardwareMode::Automatic));
+        assert!(automatic
+            .iter()
+            .all(|&n| n == if bias >= 6 { 1 } else { 0 }));
+    }
+}
+
+#[test]
+fn positive_offset_includes_calibrated_comfort_demand_before_saturation() {
+    for bias in 1..=10 {
+        for body in [40., 42., 44., 46., 47.] {
+            let mut cfg = calibrated_config();
+            cfg.adaptive_tuning.bias = bias;
+            let mut sim = Simulation::with_config(cfg);
+            sim.temperature("body", Some(body));
+            sim.advance(600);
+            let r = sim.reading();
+            assert_eq!(
+                r.adjusted_demand_percent,
+                Some((r.demand_percent + 2. * bias as f64).min(100.)),
+                "bias {bias}, body {body}"
+            );
+            assert!(r.adjusted_demand_percent.unwrap() >= r.comfort_demand_percent);
+        }
     }
 }

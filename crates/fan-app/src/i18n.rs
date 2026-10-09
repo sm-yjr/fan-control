@@ -123,6 +123,20 @@ macro_rules! texts {
 }
 
 const CATALOG: &[Text] = texts![
+    ("温度趋势", "Temperature trend"),
+    ("风扇转速", "Fan RPM"),
+    ("10 分钟前", "10 min ago"),
+    ("现在", "Now"),
+    ("界面验证 · 模拟数据", "UI verification · simulated data"),
+    ("转速范围未知", "RPM range unavailable"),
+    ("暂无温度数据", "Temperature unavailable"),
+    ("正在保存散热偏好…", "Saving cooling preference…"),
+    ("散热偏好已保存，等待新采样评估。", "Cooling preference saved; awaiting a fresh sample."),
+    ("按散热偏好加强散热；较高偏好可能在空闲时保持主动散热。恢复默认后可随冷却交还系统。", "Cooling follows your preference. Higher settings may keep fans active while idle; Default allows control to return after cooling."),
+    ("正在按散热偏好维持主动散热。恢复默认后可随冷却交还系统。", "Your cooling preference keeps the fans active. Default allows control to return after cooling."),
+    ("21 档散热偏好，默认在中间。更凉快每档增加 2 个散热需求百分点，最多增加 20 个百分点，上限 100%。高档位可在空闲时保持主动散热；恢复默认后可随冷却交还系统。", "21 cooling settings with Default in the center. Each Cooler step adds 2 cooling-demand percentage points, up to 20 points, capped at 100%. Higher settings can keep fans active while idle; Default allows control to return after cooling."),
+    ("无需校准。更安静会适度降低日常散热；更凉快每档增加 2 个散热需求百分点，最多增加 20 个百分点，上限 100%。高档位可在空闲时保持主动散热。高温保护始终优先。保存偏好不会切换风扇模式。", "No calibration required. Quieter gently reduces everyday cooling. Each Cooler step adds 2 cooling-demand percentage points, up to 20 points, capped at 100%. Higher settings may keep fans active while idle. Overheat protection takes priority. Saving does not change fan modes."),
+
     ("默认", "Default"),
     ("散热偏好必须为 -10...10", "Cooling preference must be -10...10"),
     ("散热偏好", "Cooling preference"),

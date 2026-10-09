@@ -19,7 +19,14 @@ fn mapping_is_bounded_ordered_monotonic_and_exactly_neutral() {
                 let quiet = tuned_adaptive_demand(demand, -1.0, hot);
                 let cool = tuned_adaptive_demand(demand, 1.0, hot);
                 assert!(quiet <= value && value <= cool);
-                assert!((value - demand).abs() <= 8.0 + 1e-10);
+                assert!(
+                    (value - demand).abs()
+                        <= if bias > 0.0 {
+                            20.0 + 1e-10
+                        } else {
+                            8.0 + 1e-10
+                        }
+                );
             }
         }
     }
@@ -191,4 +198,48 @@ fn preference_recovery_does_not_relax_other_configuration_validation() {
         Config::from_json(&candidate.to_string()),
         Err(ConfigError::Invalid(_))
     ));
+}
+
+#[test]
+fn cooler_positions_add_absolute_points_at_idle_and_saturate() {
+    for position in 0..=10 {
+        let bias = AdaptiveTuning { bias: position }.normalized();
+        for demand in [0.0_f64, 5.0, 20.0, 50.0, 90.0, 100.0] {
+            for hottest in [45.0, 80.0, 85.0, 90.0, 96.0] {
+                let expected = (demand + 2.0 * f64::from(position)).min(100.0);
+                assert!((tuned_adaptive_demand(demand, bias, hottest) - expected).abs() < 1e-10);
+            }
+        }
+    }
+}
+
+#[test]
+fn quieter_mapping_matches_the_previous_envelope_at_every_position() {
+    for position in -10..=0 {
+        for demand in [0.0_f64, 5.0, 20.0, 50.0, 90.0, 100.0] {
+            for hottest in [45.0_f64, 80.0, 85.0, 90.0, 96.0] {
+                let x = demand / 100.0;
+                let hot = ((hottest - 80.0) / 10.0).clamp(0.0, 1.0);
+                let gate = 1.0 - hot * hot * (3.0 - 2.0 * hot);
+                let bias = f64::from(position) / 10.0;
+                let previous = (demand + bias * 32.0 * x * (1.0 - x) * gate).clamp(0.0, 100.0);
+                assert!((tuned_adaptive_demand(demand, bias, hottest) - previous).abs() < 1e-10);
+            }
+        }
+    }
+}
+
+#[test]
+fn cooler_transition_keeps_ten_second_smoothing_and_no_gap_shortcut() {
+    let target = AdaptiveTuning { bias: 10 };
+    let mut value = 0.0;
+    for _ in 0..5 {
+        value = smooth_adaptive_bias(value, target, 2.0);
+    }
+    assert!((value - (1.0 - (-1.0_f64).exp())).abs() < 1e-10);
+    assert!((tuned_adaptive_demand(50.0, value, 45.0) - (50.0 + value * 20.0)).abs() < 1e-10);
+    assert_eq!(
+        smooth_adaptive_bias(0.0, target, 60.0),
+        smooth_adaptive_bias(0.0, target, 5.0)
+    );
 }

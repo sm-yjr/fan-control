@@ -784,6 +784,12 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
         } else {
             match reading.intervention {
                 Why::Idle if !actively_controlled => "负载较低，风扇交给系统，保持安静。",
+                Why::Idle
+                    if state.config.adaptive_tuning.bias > 0
+                        && effective_demand > reading.demand_percent =>
+                {
+                    "正在按散热偏好维持主动散热。恢复默认后可随冷却交还系统。"
+                }
                 Why::Idle => "正在按持续热负载平稳调节风扇。",
                 Why::Temperature => "正在按持续热负载平稳调节风扇。",
                 Why::LoadFeedForward => "检测到持续高负载，正在逐步增加散热。",
@@ -830,7 +836,7 @@ pub fn battery_lines(battery: &fan_platform::BatteryReading) -> (String, Vec<Str
     (state, details)
 }
 
-fn grouped(value: u64) -> String {
+pub(crate) fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
@@ -1349,6 +1355,22 @@ mod tests {
     }
 
     #[test]
+    fn positive_idle_reason_requires_confirmed_active_control_and_preserves_pending_safety() {
+        let mut state = controlled_smart_state();
+        state.config.adaptive_tuning.bias = 10;
+        state.thermal.adaptive.adjusted_demand_percent = Some(20.);
+        assert!(smart_status(&state, true).reason.contains("散热偏好"));
+        state.snapshot.fans[0].mode = HardwareMode::Automatic;
+        state.targets.insert(0, None);
+        state.confirmed_targets.insert(0, None);
+        assert!(!smart_status(&state, true).reason.contains("维持主动"));
+        state.handback_pending = true;
+        assert_eq!(smart_status(&state, true).reason, HANDBACK_PENDING_REASON);
+        state.handback_pending = false;
+        assert_eq!(smart_status(&state, false).demand, None);
+    }
+
+    #[test]
     fn cooling_residence_checks_default_and_every_preference_position() {
         let mut state = controlled_smart_state();
         state.thermal.adaptive.demand_percent = 5.;
@@ -1364,7 +1386,7 @@ mod tests {
                 assert!(!shown.reason.contains("交给系统"), "bias {bias}");
             }
         }
-        assert!((fan_core::tuned_adaptive_demand(5., 1., 60.) - 6.52).abs() < 1e-10);
+        assert!((fan_core::tuned_adaptive_demand(5., 1., 60.) - 25.).abs() < 1e-10);
     }
 
     #[test]

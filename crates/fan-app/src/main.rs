@@ -5,6 +5,8 @@ extern "C" fn terminate_signal(_: libc::c_int) {
 }
 mod app_version;
 mod chart;
+mod dashboard;
+mod dashboard_render;
 mod details;
 mod fans;
 mod form;
@@ -53,7 +55,8 @@ fn main() {
             let _lock=match storage::InstanceLock::acquire(&lock_directory){Ok(lock)=>lock,Err(error)=>{eprintln!("Fan Control is already running, or the session lock cannot be acquired: {error}");return;}};
             ui::run(demo,false);
         },
+        LaunchMode::DashboardRender=>dashboard_render::run(),
         LaunchMode::UiSmoke=>ui::run(true,true),
-        LaunchMode::Help=>println!("FanControl [--demo | --read-sensors | --check-updater-runtime | --package-info | --ui-smoke | --helper]\nDefault: native menu-bar application. --read-sensors only reads SMC; --demo never connects to hardware."),
+        LaunchMode::Help=>println!("FanControl [--demo | --read-sensors | --check-updater-runtime | --package-info | --ui-smoke | --dashboard-render | --helper]\nDefault: native menu-bar application. --read-sensors only reads SMC; --demo never connects to hardware."),
     }
 }

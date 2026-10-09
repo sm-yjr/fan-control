@@ -50,6 +50,10 @@ pub enum WorkerCommand {
         tuning: fan_core::AdaptiveTuning,
         reply: Sender<Result<(), String>>,
     },
+    ConfigureTuning {
+        tuning: fan_core::AdaptiveTuning,
+        reply: Sender<Result<(), String>>,
+    },
     Reset,
     Uninstall,
     Uninstalled(fan_platform::HelperResponse),
@@ -707,6 +711,23 @@ fn run(
                     Err(error) => error.clone(),
                 };
                 // Publish the accepted config before acknowledging the UI, so reopening is consistent.
+                shared.lock().expect("worker snapshot lock").config = controller.config().clone();
+                let _ = reply.send(result);
+                next_sample = Instant::now();
+            }
+            Ok(WorkerCommand::ConfigureTuning { tuning, reply }) => {
+                let policy = controller.config().thermal_policy.clone();
+                let result = if installing {
+                    Err("正在安装或移除控制服务，请完成后再更新智能策略。".into())
+                } else {
+                    configure_smart(&mut controller, policy, tuning, |candidate| {
+                        persistence.save(candidate)
+                    })
+                };
+                message = match &result {
+                    Ok(()) => "散热偏好已保存，等待新采样评估。".into(),
+                    Err(e) => e.clone(),
+                };
                 shared.lock().expect("worker snapshot lock").config = controller.config().clone();
                 let _ = reply.send(result);
                 next_sample = Instant::now();
@@ -1797,6 +1818,38 @@ mod tuning_tests {
             assert_eq!(controller.config().adaptive_tuning, tuning);
             assert_eq!(controller.config().fans, original.fans);
         }
+    }
+    #[test]
+    fn inline_preference_publishes_only_accepted_value_and_preserves_policy_and_modes() {
+        let worker = Worker::start(true);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !worker.snapshot().discovered && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(worker.snapshot().discovered);
+        let initial = worker.snapshot().config;
+        for bias in [10, -10, 0, 11, 6] {
+            let before = worker.snapshot().config;
+            let (tx, rx) = mpsc::channel();
+            worker
+                .send(WorkerCommand::ConfigureTuning {
+                    tuning: fan_core::AdaptiveTuning { bias },
+                    reply: tx,
+                })
+                .unwrap();
+            let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let after = worker.snapshot().config;
+            if bias == 11 {
+                assert!(result.is_err());
+                assert_eq!(before, after);
+            } else {
+                result.unwrap();
+                assert_eq!(after.adaptive_tuning.bias, bias);
+            }
+            assert_eq!(after.thermal_policy, initial.thermal_policy);
+            assert_eq!(after.fans, initial.fans);
+        }
+        assert!(worker.shutdown());
     }
     #[test]
     fn isolated_worker_acknowledges_after_publishing_accepted_preference() {

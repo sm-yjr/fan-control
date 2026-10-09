@@ -299,12 +299,19 @@ impl Controller {
                     .thermal_load_percent
                     .max(adaptive.heat_soak_percent);
                 let daily = if daily < 1.0 { 0.0 } else { daily };
+                // Cooler adds to the complete ordinary demand, including a calibrated
+                // comfort contribution. Quieter retains its original daily-only mapping.
+                let preference_demand = if self.effective_bias > 0.0 {
+                    adaptive.demand_percent
+                } else {
+                    daily
+                };
                 let hottest = snapshot
                     .hottest_silicon()
                     .unwrap_or(90.0)
                     .max(self.thermal.sustained_hotspot_temperature);
                 adaptive.adjusted_demand_percent = Some(
-                    tuned_adaptive_demand(daily, self.effective_bias, hottest)
+                    tuned_adaptive_demand(preference_demand, self.effective_bias, hottest)
                         .max(adaptive.comfort_demand_percent),
                 );
             }

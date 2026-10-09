@@ -5,6 +5,7 @@ pub enum LaunchMode {
     ReadSensors,
     UpdaterCheck,
     UiSmoke,
+    DashboardRender,
     PackageInfo,
     Help,
 }
@@ -18,6 +19,7 @@ impl LaunchMode {
                 "--demo" => Ok(Self::Gui { demo: true }),
                 "--read-sensors" => Ok(Self::ReadSensors),
                 "--check-updater-runtime" => Ok(Self::UpdaterCheck),
+                "--dashboard-render" => Ok(Self::DashboardRender),
                 "--ui-smoke" => Ok(Self::UiSmoke),
                 "--package-info" => Ok(Self::PackageInfo),
                 "--help" | "-h" => Ok(Self::Help),
@@ -36,6 +38,7 @@ mod tests {
     #[test]
     fn helper_cannot_be_combined_with_gui_diagnostics() {
         assert!(parse(&["app", "--helper", "--demo"]).is_err());
+        assert!(parse(&["app", "--helper", "--dashboard-render"]).is_err());
     }
     #[test]
     fn diagnostics_are_explicit() {
