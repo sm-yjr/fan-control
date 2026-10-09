@@ -123,6 +123,7 @@ macro_rules! texts {
 }
 
 const CATALOG: &[Text] = texts![
+    ("散热偏好正在平滑调整。", "Cooling preference is adjusting gradually."),
     ("温度趋势", "Temperature trend"),
     ("风扇转速", "Fan RPM"),
     ("10 分钟前", "10 min ago"),
