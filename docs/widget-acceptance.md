@@ -16,7 +16,7 @@ GUI 把 CPU 平均温度、实测风扇 RPM、硬件范围、风扇数量、时�
 - Rust 时间换算、空读数、无风扇、非法 RPM，Swift 旧/损坏快照、生命周期、过期、未知范围：自动测试。
 - 离线布局渲染只用于小号/中号、单双风扇、深浅色和缺失状态审查，不能代替系统 Widget 验收。
 - 已批准设计图：2026-10-09 用户已直接附图，已实际查看像素并按设计补上小号趋势及单双风扇半圆仪表；中号保持温度/趋势和自适应仪表分栏。图中数字仅为示例，产品取真实采样；CPU 标签明确读数来源，未从批准图照抄无法证实的“智能散热”状态。
-- 当前 Mac Studio 桌面：重新检查为锁定。用户本次明确要求“跳过所有需要解锁测试的部分”（主对话 Sentinel_2be45824aa0481918ad61438e29afe82），因此 Gallery、桌面添加、点击、系统刷新、键鼠/VoiceOver 等记为未验证并获本次发布豁免；不绕过 OS 权限，不将其视为通过，也不适用于未来版本。
+- 当前 Mac Studio 桌面：重新检查为锁定。用户本次明确要求“跳过所有需要解锁测试的部分”，因此 Gallery、桌面添加、点击、系统刷新、键鼠/VoiceOver 等记为未验证并获本次发布豁免；不绕过 OS 权限，不将其视为通过，也不适用于未来版本。
 - Developer ID / App Group 真实读取：当前 Mac Studio（macOS27）已通过。使用现有 Developer ID Application: Jerry Young（JFC5CWT3V6），候选 App 与沙盒 .appex 各运行 `--check-widget-container`，写入/读取的全新 nonce 一致；未出现权限等待或错误。无新增凭据、管理员授权或机器安全设置变更，不访问其他组/配置/SMC/helper，不覆盖已安装 App/helper。macOS14 上的真实 Developer ID 容器读取仍未验证；CI 仅证明编译和 ad-hoc 包校验。
 - 现有 Developer ID 证书、时间戳、Hardened Runtime、沙盒与 helper 权限静态检查已通过。公证/Gatekeeper、公开 Sparkle 资产校验：发布前完成。版本/build 必须与主 App 一致，独立 helper 必须无 App 内 dylib 依赖或组权限。
 - 窗口上下抖动 hotfix：de2b2c8 已整合为 57b515a；组合 Rust 271 测试、64 原生离屏场景和 4,352 次刷新通过，重复尺寸提交 0。真实 popover 显示隐藏/菜单栏锚点未验证，获上述本次豁免。
