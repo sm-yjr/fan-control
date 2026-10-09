@@ -166,6 +166,19 @@ pub struct AdaptiveReading {
     pub available: bool,
 }
 
+impl AdaptiveReading {
+    /// Shared low-demand prerequisite, not proof that control has been handed back.
+    /// The caller supplies the effective demand after independent safety floors.
+    /// The controller separately requires residence, quiet confirmation and idle RPM.
+    pub fn low_demand_for_release(&self, effective_demand_percent: f64) -> bool {
+        effective_demand_percent <= ADAPTIVE_RELEASE_DEMAND_PERCENT
+            && self.demand_percent <= ADAPTIVE_RELEASE_DEMAND_PERCENT
+            && !self.load_sustained
+            && self.silicon_rise_celsius_per_second <= 0.15
+            && self.comfort_demand_percent <= 0.0
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AdaptiveEstimator {
     cpu_trend: SiliconTrend,

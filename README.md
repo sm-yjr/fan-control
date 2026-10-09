@@ -5,7 +5,7 @@
 
 Fan Control 是面向 macOS 14+、Apple Silicon 的菜单栏风扇控制工具。项目正在迁移到 Rust：热模型、控制策略、配置、Apple SMC 和 privileged helper 使用 Rust；界面通过 `objc2` 使用 AppKit 原生系统控件。主构建已经切换到 Cargo，旧 Swift 源码暂时保留作为行为和配置兼容性对照，不参与新应用构建，完成迁移验收后再移除。
 
-当前分发使用 Rust 实现。构建成功或自动化测试通过，只证明对应代码与产物检查通过；各型号真实风扇控制、睡眠恢复与实际更新的验证范围见 [Rust 产品验收清单](docs/rust-product-acceptance.md)。迁移审查见 [独立审查报告](docs/rust-migration-review.md)，0.2.2 智能散热 hotfix 见 [0.2.2 发布说明](docs/releases/0.2.2.md)，本轮温度详情修复见 [0.2.3 发布说明](docs/releases/0.2.3.md)。智能散热偏好更新见 [0.3.0 发布说明](docs/releases/0.3.0.md)，实际验证范围与未完成项目如实保留。下载以对应 Release 的产物和说明为准。
+当前分发使用 Rust 实现。构建成功或自动化测试通过，只证明对应代码与产物检查通过；各型号真实风扇控制、睡眠恢复与实际更新的验证范围见 [Rust 产品验收清单](docs/rust-product-acceptance.md)。迁移审查见 [独立审查报告](docs/rust-migration-review.md)，0.2.2 智能散热 hotfix 见 [0.2.2 发布说明](docs/releases/0.2.2.md)，本轮温度详情修复见 [0.2.3 发布说明](docs/releases/0.2.3.md)。智能散热偏好更新见 [0.3.0 发布说明](docs/releases/0.3.0.md)，实际验证范围与未完成项目如实保留。状态提示与偏好布局修复见 [0.3.1 发布说明](docs/releases/0.3.1.md)。下载以对应 Release 的产物和说明为准。
 
 > [!WARNING]
 > 风扇控制会直接修改硬件状态。错误的曲线可能导致过热、降频、数据丢失或硬件损坏。首次使用保持系统自动模式；选择自定义模式时保留温度余量。软件按 GPL-3.0 的无担保条款提供。
@@ -76,8 +76,8 @@ MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --locked
 `package_app.sh` 默认构建 debug 版本，固定 `MACOSX_DEPLOYMENT_TARGET=14.0`，Cargo 输出位于 `target/debug/FanControl` 或 `target/release/FanControl`。脚本只接受 Apple Silicon 本机构建，`ARCHITECTURES` 只能为空或 `arm64`；不能用此参数宣称已经支持 Intel 或 universal 构建。App 产物默认位于 `dist/FanControl.app`。
 
 ```bash
-APP_VERSION=0.3.0 \
-BUILD_NUMBER=300 \
+APP_VERSION=0.3.1 \
+BUILD_NUMBER=301 \
 BUILD_CONFIGURATION=release \
 ARCHITECTURES=arm64 \
 ./script/package_app.sh
@@ -149,9 +149,9 @@ DMG 的本地构建检查不需要 Apple 公证账户：
 ```bash
 ./script/package_dmg.sh \
   dist/FanControl.app \
-  dist/FanControl-0.3.0.dmg \
-  "Fan Control 0.3.0"
-hdiutil verify dist/FanControl-0.3.0.dmg
+  dist/FanControl-0.3.1.dmg \
+  "Fan Control 0.3.1"
+hdiutil verify dist/FanControl-0.3.1.dmg
 ```
 
 本地 ad-hoc 签名和 DMG 校验不能证明网络下载后的 Gatekeeper 接受或正式更新安装已经通过；正式候选包必须重新完成这些验收。

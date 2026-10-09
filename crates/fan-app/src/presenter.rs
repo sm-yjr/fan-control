@@ -681,12 +681,26 @@ pub struct SmartStatus {
 pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
     use fan_core::AdaptiveIntervention as Why;
     let reading = &state.thermal.adaptive;
-    let available = fresh && reading.available;
     let actual_demand = reading
         .adjusted_demand_percent
         .unwrap_or(reading.demand_percent);
+    let available = fresh && reading.available && actual_demand.is_finite();
     let demand = available.then_some(actual_demand.clamp(0., 100.));
-    let cooling_held = state.snapshot.fans.iter().any(|fan| {
+    // Match the controller's release prerequisite, including its safety floors.
+    // UiSnapshot has no residence timers: this describes waiting, not completion.
+    let safety_floor = fan_core::missing_input_safety_percent(
+        state.snapshot.thermal_pressure,
+        state.snapshot.hottest_silicon(),
+    )
+    .unwrap_or(0.0);
+    let effective_demand = actual_demand.max(safety_floor).max(
+        if state.snapshot.thermal_pressure == ThermalPressure::Fair {
+            35.0
+        } else {
+            0.0
+        },
+    );
+    let actively_controlled = state.snapshot.fans.iter().any(|fan| {
         configured(state, fan.id) == ControlMode::Adaptive
             && fan.mode == HardwareMode::Forced
             && state
@@ -694,9 +708,10 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
                 .get(&fan.id)
                 .is_some_and(Option::is_some)
             && state.targets.get(&fan.id).is_some_and(Option::is_some)
-            && reading.demand_percent <= fan_core::ADAPTIVE_RELEASE_DEMAND_PERCENT
-            && reading.comfort_demand_percent <= 0.0
     });
+    let cooling_held = actively_controlled
+        && !state.safety_active
+        && reading.low_demand_for_release(effective_demand);
     let smart_fans: Vec<_> = state
         .snapshot
         .fans
@@ -726,12 +741,13 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
         {
             "温度或系统热压力过高，安全保护正在加大散热。"
         } else if cooling_held {
-            "正在缓慢降低转速，待持续冷却后交还系统。"
+            "散热需求较低，待持续冷却后交还系统。"
         } else if system_idle && actual_demand < fan_core::ADAPTIVE_START_DEMAND_PERCENT {
             "负载较低，风扇交给系统，保持安静。"
         } else {
             match reading.intervention {
-                Why::Idle => "负载较低，风扇交给系统，保持安静。",
+                Why::Idle if !actively_controlled => "负载较低，风扇交给系统，保持安静。",
+                Why::Idle => "正在按持续热负载平稳调节风扇。",
                 Why::Temperature => "正在按持续热负载平稳调节风扇。",
                 Why::LoadFeedForward => "检测到持续高负载，正在逐步增加散热。",
                 Why::RisingTemperature => "检测到持续升温趋势，逐步增加散热。",
@@ -1189,6 +1205,122 @@ mod tests {
         state.confirmed_targets.insert(0, None);
         assert!(smart_status(&state, true).reason.contains("交给系统"));
         assert_eq!(smart_status(&state, false).reason, "正在等待温度数据。");
+    }
+
+    fn controlled_smart_state() -> UiSnapshot {
+        let mut state = state(
+            vec![fan(0, 1500., HardwareMode::Forced)],
+            &[ControlMode::Adaptive],
+        );
+        state.thermal.adaptive.available = true;
+        state.targets.insert(0, Some(1500));
+        state.confirmed_targets.insert(0, Some(1500));
+        state
+    }
+
+    #[test]
+    fn cooling_residence_checks_default_and_every_preference_position() {
+        let mut state = controlled_smart_state();
+        state.thermal.adaptive.demand_percent = 5.;
+        for bias in -10..=10 {
+            state.config.adaptive_tuning.bias = bias;
+            let adjusted =
+                fan_core::tuned_adaptive_demand(5., state.config.adaptive_tuning.normalized(), 60.);
+            state.thermal.adaptive.adjusted_demand_percent = (bias != 0).then_some(adjusted);
+            let shown = smart_status(&state, true);
+            assert_eq!(shown.demand, Some(adjusted));
+            assert_eq!(shown.reason.contains("持续冷却"), bias <= 0, "bias {bias}");
+            if bias > 0 {
+                assert!(!shown.reason.contains("交给系统"), "bias {bias}");
+            }
+        }
+        assert!((fan_core::tuned_adaptive_demand(5., 1., 60.) - 6.52).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cooling_residence_keeps_raw_and_adjusted_release_boundaries() {
+        let mut state = controlled_smart_state();
+        for (raw, adjusted, held) in [
+            (5., None, true),
+            (5.0001, None, false),
+            (5., Some(5.), true),
+            (5., Some(5.0001), false),
+            (5.0001, Some(5.), false),
+            (
+                8.,
+                Some(fan_core::tuned_adaptive_demand(8., -1., 60.)),
+                false,
+            ),
+        ] {
+            state.thermal.adaptive.demand_percent = raw;
+            state.thermal.adaptive.adjusted_demand_percent = adjusted;
+            assert_eq!(smart_status(&state, true).reason.contains("持续冷却"), held);
+        }
+        // Unacknowledged writes are not proof of active control.
+        state.thermal.adaptive.demand_percent = 0.;
+        state.thermal.adaptive.adjusted_demand_percent = None;
+        state.confirmed_targets.insert(0, None);
+        assert!(!smart_status(&state, true).reason.contains("持续冷却"));
+    }
+
+    #[test]
+    fn cooling_residence_waits_for_load_trend_and_comfort_to_subside() {
+        use fan_core::AdaptiveIntervention as Why;
+        let mut state = controlled_smart_state();
+        state.thermal.adaptive.demand_percent = 5.;
+        state.thermal.adaptive.load_sustained = true;
+        state.thermal.adaptive.intervention = Why::LoadFeedForward;
+        assert!(smart_status(&state, true).reason.contains("持续高负载"));
+        state.thermal.adaptive.load_sustained = false;
+        state.thermal.adaptive.intervention = Why::RisingTemperature;
+        for (trend, held) in [(0.15, true), (0.150001, false), (-0.1, true)] {
+            state.thermal.adaptive.silicon_rise_celsius_per_second = trend;
+            let shown = smart_status(&state, true);
+            assert_eq!(shown.reason.contains("持续冷却"), held);
+            if !held {
+                assert!(shown.reason.contains("升温趋势"));
+            }
+        }
+        state.thermal.adaptive.silicon_rise_celsius_per_second = 0.;
+        state.thermal.adaptive.comfort_demand_percent = 0.01;
+        state.thermal.adaptive.intervention = Why::Comfort;
+        assert!(smart_status(&state, true).reason.contains("保持舒适"));
+    }
+
+    #[test]
+    fn cooling_residence_never_masks_missing_data_or_safety_floors() {
+        let mut state = controlled_smart_state();
+        state.thermal.adaptive.adjusted_demand_percent = Some(4.);
+        assert_eq!(smart_status(&state, false).reason, "正在等待温度数据。");
+        state.thermal.adaptive.available = false;
+        assert_eq!(smart_status(&state, true).demand, None);
+        assert_eq!(smart_status(&state, true).reason, "正在等待温度数据。");
+        state.thermal.adaptive.available = true;
+        for invalid in [f64::NAN, f64::INFINITY] {
+            state.thermal.adaptive.adjusted_demand_percent = Some(invalid);
+            assert_eq!(smart_status(&state, true).demand, None);
+            assert_eq!(smart_status(&state, true).reason, "正在等待温度数据。");
+        }
+        state.thermal.adaptive.adjusted_demand_percent = Some(4.);
+        for pressure in [
+            ThermalPressure::Fair,
+            ThermalPressure::Serious,
+            ThermalPressure::Critical,
+        ] {
+            state.snapshot.thermal_pressure = pressure;
+            assert!(!smart_status(&state, true).reason.contains("持续冷却"));
+            assert!(!smart_status(&state, true).reason.contains("交给系统"));
+        }
+        state.safety_active = true;
+        assert!(smart_status(&state, true).reason.contains("安全保护"));
+        state.snapshot.thermal_pressure = ThermalPressure::Nominal;
+        state.snapshot.sensors.push(fan_core::Sensor {
+            key: "TC0P".into(),
+            name: "CPU".into(),
+            group: fan_core::SensorGroup::Cpu,
+            value: Some(96.),
+        });
+        assert!(smart_status(&state, true).reason.contains("安全保护"));
     }
 
     #[test]

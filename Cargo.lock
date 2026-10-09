@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "fan-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "block2",
  "fan-core",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "fan-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "fan-licenses"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "fan-platform"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "serde",
