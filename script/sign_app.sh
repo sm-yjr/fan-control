@@ -54,9 +54,12 @@ sign_target "$APP/Contents/Frameworks/FanControlWidgetBridge.dylib"
 sign_target "$APP/Contents/PlugIns/FanControlWidget.appex" --entitlements "$ROOT_DIR/Widget/Widget.entitlements"
 sign_target "$APP" --entitlements "$ROOT_DIR/Widget/App.entitlements"
 
-if [[ "$IDENTITY" != "-" ]] && ! codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "TeamIdentifier=JFC5CWT3V6"; then
-  echo "error: Widget App Group requires the Fan Control signing team JFC5CWT3V6" >&2
-  exit 1
+if [[ "$IDENTITY" != "-" ]]; then
+  signature_metadata="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+  if [[ "$signature_metadata" != *"TeamIdentifier=JFC5CWT3V6"* ]]; then
+    echo "error: Widget App Group requires the Fan Control signing team JFC5CWT3V6" >&2
+    exit 1
+  fi
 fi
 
 codesign --verify --strict --verbose=2 "$HELPER"

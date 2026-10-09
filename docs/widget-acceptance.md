@@ -17,8 +17,8 @@ GUI 把 CPU 平均温度、实测风扇 RPM、硬件范围、风扇数量、时�
 - 离线布局渲染只用于小号/中号、单双风扇、深浅色和缺失状态审查，不能代替系统 Widget 验收。
 - 已批准设计图：Library 403，等待用户直接附图，尚未比对实际像素。
 - 当前 Mac Studio 桌面：重新检查为锁定；Gallery 注册、桌面添加、点击进入主 App、系统深浅色、VoiceOver、系统刷新仍待解锁验证。
-- Developer ID / App Group 真实读取：需要批准工作区候选签名与启动；不覆盖已安装 App/helper，不恢复用户控制配置、不执行 RPM 写入。可在候选 App 与 .appex 各运行 `--check-widget-container`，比对新 nonce 来验证真实签名下的共享读取；诊断只写独立测试文件，完全不连接 SMC 或 helper。应使用隔离只读诊断候选并验证容器归属，失败不能放宽机器安全设置。
-- 真实签名、公证/Gatekeeper、Sparkle 资产校验：发布前完成。版本/build 必须与主 App 一致，独立 helper 必须无 App 内 dylib 依赖或组权限。
-- 窗口上下抖动 hotfix：另任务开发，发布前整合可移植提交并复验；此分支只增加 URL delegate，不改布局。
+- Developer ID / App Group 真实读取：当前 Mac Studio（macOS27）已通过。使用现有 Developer ID Application: Jerry Young（JFC5CWT3V6），候选 App 与沙盒 .appex 各运行 `--check-widget-container`，写入/读取的全新 nonce 一致；未出现权限等待或错误。无新增凭据、管理员授权或机器安全设置变更，不访问其他组/配置/SMC/helper，不覆盖已安装 App/helper。macOS14 上的真实 Developer ID 容器读取仍未验证；CI 仅证明编译和 ad-hoc 包校验。
+- 现有 Developer ID 证书、时间戳、Hardened Runtime、沙盒与 helper 权限静态检查已通过。公证/Gatekeeper、公开 Sparkle 资产校验：发布前完成。版本/build 必须与主 App 一致，独立 helper 必须无 App 内 dylib 依赖或组权限。
+- 窗口上下抖动 hotfix：de2b2c8 已整合为 57b515a；组合 Rust 271 测试、64 原生离屏场景和 4,352 次刷新通过，重复尺寸提交 0。真实 popover 显示隐藏/菜单栏锚点仍待解锁验收。
 
 依据：[Apple WidgetKit 刷新说明](https://developer.apple.com/documentation/widgetkit/keeping-a-widget-up-to-date)、[App Group 容器文档](https://developer.apple.com/documentation/xcode/accessing-app-group-containers)、[Apple DTS 的 macOS App Group 说明](https://developer.apple.com/forums/thread/721701)。
