@@ -1,6 +1,16 @@
 # 原生桌面 Widget 验收
 
-下一版目标为 0.5.0。扩展是 SwiftUI / WidgetKit `StaticConfiguration`，仅支持 `systemSmall` / `systemMedium`，macOS 14+ arm64。CLT `swiftc` 构建，不需要完整 Xcode、Swift 宏插件或迁移 Rust 主 App。
+扩展首版为 0.5.0，启动修复版为 0.5.1。扩展是 SwiftUI / WidgetKit `StaticConfiguration`，仅支持 `systemSmall` / `systemMedium`，macOS 14+ arm64。CLT `swiftc` 构建，不需要完整 Xcode、Swift 宏插件或迁移 Rust 主 App。
+
+## 0.5.1 启动回归验证
+
+0.5.0 的 CLT 链接命令没有设置 `_NSExtensionMain`，`LC_MAIN` 直接进入普通 Swift main，绕过扩展宿主启动参数初始化。用户的正式 build19 在 macOS27.2（26B5086k）获取 Gallery 描述符时触发 ExtensionFoundation 的 SIGTRAP。0.5.1 仅修复 Widget 的链接入口，使用标准 `@main Widget`，移除生产扩展内绕过宿主的命令行探测分支；App Group、沙盒、helper 协议和硬件控制保持原实现。
+
+`verify_extension_entrypoint.py` 解析最终 arm64 Mach-O 的 `LC_MAIN`、符号桩与间接符号表，要求真实入口为 `_NSExtensionMain`。构建时和包验收时都执行，CI / Release 继承该检查。原 0.5.0 二进制被拒绝，修复候选通过。
+
+2026-10-09，Mac Studio macOS27.0（26A428）、CLT Swift6.4、现有 Developer ID 签名候选 0.5.1 build20：已实际打开系统“编辑小组件”，选择 FanControl，Gallery 显示小/中两种尺寸。系统以 `-BSServiceDomains` / `-LaunchArguments` 启动 /tmp 临时候选扩展；日志记录 `getAllCurrentDescriptors(completion:)`，随后两种尺寸的 snapshot / placeholder 请求成功。桌面已观察到 Fan Control 组件，在无主 App 采样时显示“暂无读数 / 打开应用获取读数”。未运行生产主 App、安装 helper 或写风扇；无权限或安全设置变更。这是宿主启动证据，离屏渲染和共享容器探测不能替代此检查。
+
+用户故障机 macOS27.2 和 macOS14 的真实 Developer ID 宿主验证仍待执行；CI 证明 macOS14/15 的构建与包验收。点击打开生产主 App、真实数据刷新及硬件生命周期验证未在此次修复中执行。0.5.0 的桌面测试豁免仅属于该历史版本，不适用于 0.5.1。
 
 ## 数据与边界
 
