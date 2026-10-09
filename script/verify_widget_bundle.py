@@ -4,6 +4,7 @@ import pathlib
 import plistlib
 import subprocess
 import sys
+from verify_extension_entrypoint import verify_entrypoint
 
 app = pathlib.Path(sys.argv[1])
 extension = app / 'Contents/PlugIns/FanControlWidget.appex'
@@ -18,6 +19,7 @@ def entitlements(target):
 
 main = info(app)
 widget = info(extension)
+verify_entrypoint(extension / 'Contents/MacOS/FanControlWidget')
 assert widget['CFBundleIdentifier'] == main['CFBundleIdentifier'] + '.widget'
 for key in ('CFBundleVersion', 'CFBundleShortVersionString', 'LSMinimumSystemVersion'):
     assert widget[key] == main[key], key

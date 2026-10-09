@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="${1:?usage: build_widget.sh <app bundle>}"
-APP_VERSION="${APP_VERSION:-0.5.0}"
+APP_VERSION="${APP_VERSION:-0.5.1}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SDK="$(xcrun --show-sdk-path)"
 CACHE="$ROOT_DIR/.build/widget-module-cache"
@@ -12,7 +12,11 @@ common=(-sdk "$SDK" -target arm64-apple-macosx14.0 -module-cache-path "$CACHE" -
 xcrun swiftc "${common[@]}" -parse-as-library -application-extension \
   "$ROOT_DIR/Widget/Models/Reading.swift" "$ROOT_DIR/Widget/Views/ReadingView.swift" \
   "$ROOT_DIR/Widget/Views/TemperatureTrend.swift" "$ROOT_DIR/Widget/FanControlWidget.swift" \
+  -Xlinker -e -Xlinker _NSExtensionMain \
   -o "$EXT/Contents/MacOS/FanControlWidget"
+# Swift's API restriction flag does not select the macOS extension bootstrap.
+# NSExtensionMain initializes the host launch context before invoking Swift @main.
+python3 "$ROOT_DIR/script/verify_extension_entrypoint.py" "$EXT/Contents/MacOS/FanControlWidget"
 xcrun swiftc "${common[@]}" -emit-library "$ROOT_DIR/Widget/WidgetBridge.swift" \
   -Xlinker -install_name -Xlinker @rpath/FanControlWidgetBridge.dylib \
   -o "$APP/Contents/Frameworks/FanControlWidgetBridge.dylib"

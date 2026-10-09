@@ -19,7 +19,7 @@ struct ReadingProvider: TimelineProvider {
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(900))))
     }
 }
-struct FanControlWidget: Widget {
+@main struct FanControlWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FanControlReadings", provider: ReadingProvider()) { entry in
             ReadingView(date: entry.date, reading: entry.reading)
@@ -29,21 +29,5 @@ struct FanControlWidget: Widget {
         .configurationDisplayName("Fan Control")
         .description("Temperature and measured fan speeds. Open Fan Control to collect readings; refresh is managed by macOS.")
         .supportedFamilies([.systemSmall, .systemMedium])
-    }
-}
-
-// The explicit diagnostic path only reads a separate bounded test file. It does
-// not render fixture values, publish snapshots, or request control permissions.
-@main enum WidgetEntryPoint {
-    static func main() {
-        if CommandLine.arguments.dropFirst().first == "--check-widget-container" {
-            guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: widgetGroup),
-                  let data = try? Data(contentsOf: group.appendingPathComponent("fan-control-widget/container-check.json")), data.count < 1024,
-                  let check = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-                  let nonce = check["nonce"] else { fatalError("Shared diagnostic file unavailable") }
-            print("Widget shared container read: \(nonce)")
-            return
-        }
-        FanControlWidget.main()
     }
 }
