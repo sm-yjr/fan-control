@@ -977,15 +977,16 @@ impl Ui {
             fan_percent: view.fan_percent,
         });
         let cards = crate::presenter::fan_cards(&state, fresh);
-        self.panel
-            .refresh(&view, self.pending_speed.map(|(percent, _)| percent));
-        self.panel.refresh_dashboard(
+        self.panel.refresh(
             &view,
-            &cards,
-            &self.history,
-            state.config.adaptive_tuning.bias,
-            self.pending_panel_tuning.map(|(_, b)| b),
-            self.pending_policy_save.is_some() || state.installing,
+            self.pending_speed.map(|(percent, _)| percent),
+            crate::popover::DashboardUpdate {
+                cards: &cards,
+                history: &self.history,
+                bias: state.config.adaptive_tuning.bias,
+                pending: self.pending_panel_tuning.map(|(_, b)| b),
+                saving: self.pending_policy_save.is_some() || state.installing,
+            },
         );
         if self.window.isVisible() {
             self.overview.refresh(&view, &self.history);

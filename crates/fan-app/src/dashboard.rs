@@ -459,8 +459,20 @@ impl Dashboard {
     }
     pub fn verify_layout(&self, cards: &[FanCard]) {
         assert_eq!(self.gauges.len(), cards.len());
+        for label in [
+            &self.temperature,
+            &self.caption,
+            &self.high,
+            &self.low,
+            &self.endpoint,
+        ] {
+            crate::popover::verify_label_geometry(label, &self.view);
+        }
         for (g, c) in self.gauges.iter().zip(cards) {
             assert_eq!(g.id, c.id);
+            for label in [&g.name, &g.rpm, &g.detail] {
+                crate::popover::verify_label_geometry(label, &self.view);
+            }
             assert_eq!(g.name.stringValue().to_string(), c.name);
             assert!(g.arc.frame().size.width > 0.);
             assert!(g.rpm.frame().size.height > 0.);

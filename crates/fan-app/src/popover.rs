@@ -9,7 +9,7 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSArray, NSEdgeInsets, NSRect, NSSize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 pub(crate) mod tokens {
     pub const PANEL_WIDTH: f64 = 400.;
@@ -98,6 +98,34 @@ pub(crate) fn styled_label(
     }
     field.setSelectable(false);
     field
+}
+
+/// Native diagnostic: both the label frame and its required text height must
+/// fit after the final panel size is applied, including wrapping translations.
+pub(crate) fn verify_label_geometry(label: &NSTextField, container: &NSView) {
+    // NSTextField's native drawing frame includes alignment padding outside
+    // the stack; inspect its alignment rect for containment, full bounds for text.
+    let frame =
+        label.convertRect_toView(label.alignmentRectForFrame(label.bounds()), Some(container));
+    let bounds = container.bounds();
+    assert!(
+        frame.origin.x >= bounds.origin.x - 1. && frame.origin.y >= bounds.origin.y - 1.,
+        "label outside panel: {} frame={frame:?} bounds={bounds:?}",
+        label.stringValue()
+    );
+    assert!(
+        frame.origin.x + frame.size.width <= bounds.origin.x + bounds.size.width + 1.
+            && frame.origin.y + frame.size.height <= bounds.origin.y + bounds.size.height + 1.,
+        "label outside panel: {} frame={frame:?} bounds={bounds:?}",
+        label.stringValue()
+    );
+    let required = label.intrinsicContentSize();
+    assert!(
+        label.bounds().size.height + 1. >= required.height
+            && label.bounds().size.width + 1. >= required.width,
+        "label text clipped: {} frame={frame:?} required={required:?}",
+        label.stringValue()
+    );
 }
 
 pub(crate) struct TintIvars {
@@ -202,6 +230,16 @@ fn symbol_button(
     button
 }
 
+/// All dashboard inputs belong to the same presentation refresh. Size is
+/// committed only after both the controls and sampled readings are updated.
+pub(crate) struct DashboardUpdate<'a> {
+    pub cards: &'a [crate::presenter::FanCard],
+    pub history: &'a crate::trend::History,
+    pub bias: i8,
+    pub pending: Option<i8>,
+    pub saving: bool,
+}
+
 pub(crate) struct MenuPanel {
     pub popover: Retained<NSPopover>,
     root: Retained<NSStackView>,
@@ -224,6 +262,7 @@ pub(crate) struct MenuPanel {
     card_body: Retained<NSTextField>,
     card_action: Retained<NSButton>,
     shown_plan: Option<Plan>,
+    size_revision: Cell<u64>,
 }
 
 impl MenuPanel {
@@ -565,6 +604,7 @@ impl MenuPanel {
             card_body,
             card_action,
             shown_plan: None,
+            size_revision: Cell::new(0),
         }
     }
 
@@ -590,7 +630,12 @@ impl MenuPanel {
     }
 
     /// `pending` keeps a slider drag from being overwritten by the last saved value.
-    pub fn refresh(&mut self, view: &Presentation, pending: Option<f64>) {
+    pub fn refresh(
+        &mut self,
+        view: &Presentation,
+        pending: Option<f64>,
+        dashboard: DashboardUpdate<'_>,
+    ) {
         let healthy = view.notice.tone == Tone::Good;
         let tint = tone_color(view.notice.tone);
         self.status.setStringValue(&text(match view.notice.tone {
@@ -635,8 +680,6 @@ impl MenuPanel {
             self.shown_plan = Some(view.plan);
         }
         self.plan.setEnabled(view.controls_enabled);
-        self.description
-            .setStringValue(&text(view.plan_description));
         let custom = view.plan == Plan::Custom;
         self.custom.setHidden(!custom);
         self.curve.setHidden(!custom);
@@ -646,28 +689,13 @@ impl MenuPanel {
         }
         self.slider.setEnabled(view.controls_enabled);
         self.set_percent_label(percent);
-        if custom && view.curve_active {
-            self.description
-                .setStringValue(&text("正在按温度曲线运行。拖动滑块会改为固定速度。"));
-        }
-        // Hidden sections shrink the panel instead of leaving blank space.
-        self.root.layoutSubtreeIfNeeded();
-        let size = self.root.fittingSize();
-        let current = self.popover.contentSize();
-        if (size.height - current.height).abs() > 0.5 || (size.width - current.width).abs() > 0.5 {
-            self.popover.setContentSize(size);
-        }
-    }
-
-    pub fn refresh_dashboard(
-        &mut self,
-        view: &Presentation,
-        cards: &[crate::presenter::FanCard],
-        history: &crate::trend::History,
-        bias: i8,
-        pending: Option<i8>,
-        saving: bool,
-    ) {
+        let DashboardUpdate {
+            cards,
+            history,
+            bias,
+            pending,
+            saving,
+        } = dashboard;
         self.dashboard
             .refresh(view, cards, history, std::time::Instant::now());
         let shown = pending.unwrap_or(bias);
@@ -686,13 +714,14 @@ impl MenuPanel {
             .setStringValue(&raw_text(&format!("{}{}", tr("当前选择："), value)));
         self.preference.setEnabled(!saving);
         self.preference_reset.setEnabled(!saving && shown != 0);
-        if view.plan == Plan::Smart && shown <= 0 {
-            self.description
-                .setStringValue(&text(view.plan_description));
-        }
-        if view.plan == Plan::Smart && shown > 0 {
-            self.description.setStringValue(&text("按散热偏好加强散热；较高偏好可能在空闲时保持主动散热。恢复默认后可随冷却交还系统。"));
-        }
+        let description = if view.plan == Plan::Smart && shown > 0 {
+            "按散热偏好加强散热；较高偏好可能在空闲时保持主动散热。恢复默认后可随冷却交还系统。"
+        } else if custom && view.curve_active {
+            "正在按温度曲线运行。拖动滑块会改为固定速度。"
+        } else {
+            view.plan_description
+        };
+        self.description.setStringValue(&text(description));
         if pending.is_some() {
             self.preference_notice
                 .setStringValue(&text("正在保存散热偏好…"));
@@ -702,7 +731,12 @@ impl MenuPanel {
     }
     fn refit(&self) {
         self.root.layoutSubtreeIfNeeded();
-        self.popover.setContentSize(self.root.fittingSize());
+        let size = self.root.fittingSize();
+        let current = self.popover.contentSize();
+        if (size.height - current.height).abs() > 0.5 || (size.width - current.width).abs() > 0.5 {
+            self.popover.setContentSize(size);
+            self.size_revision.set(self.size_revision.get() + 1);
+        }
     }
     pub fn preference_result(&self, result: Result<(), String>) {
         let failed = result.is_err();
@@ -733,12 +767,29 @@ impl MenuPanel {
         );
         self.root.addArrangedSubview(&label);
     }
+    pub fn diagnostic_size_revision(&self) -> u64 {
+        self.size_revision.get()
+    }
     pub fn diagnostic_view(&self) -> &NSView {
         &self.material
     }
     pub fn verify_layout(&self, cards: &[crate::presenter::FanCard]) {
         self.root.layoutSubtreeIfNeeded();
         self.dashboard.verify_layout(cards);
+        for label in [&self.status, &self.description, &self.preference_value] {
+            verify_label_geometry(label, &self.root);
+        }
+        if !self.card.isHidden() {
+            for label in [&self.card_title, &self.card_body] {
+                verify_label_geometry(label, &self.root);
+            }
+        }
+        if !self.preference_notice.isHidden() {
+            verify_label_geometry(&self.preference_notice, &self.root);
+        }
+        if !self.custom.isHidden() {
+            verify_label_geometry(&self.percent, &self.root);
+        }
         let slider = self
             .preference
             .convertRect_toView(self.preference.bounds(), Some(&self.root));
