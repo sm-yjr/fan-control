@@ -34,6 +34,9 @@ pub struct UiSnapshot {
     pub battery: Option<fan_platform::BatteryReading>,
     pub configuration_notice: String,
     pub safety_active: bool,
+    /// Worker fallback is pending; RPM writes/renewals remain paused until confirmed.
+    /// Separate from temperature protection, which can also set safety_active.
+    pub handback_pending: bool,
     /// Requested and acknowledged targets; neither is the tachometer reading.
     pub targets: BTreeMap<u8, Option<u32>>,
     pub confirmed_targets: BTreeMap<u8, Option<u32>>,
@@ -78,6 +81,7 @@ impl Worker {
             battery: None,
             configuration_notice: String::new(),
             safety_active: false,
+            handback_pending: false,
             targets: BTreeMap::new(),
             confirmed_targets: BTreeMap::new(),
             sample_age_secs: 0.,
@@ -1172,6 +1176,7 @@ fn run(
             battery: battery.clone(),
             configuration_notice: persistence.notice(),
             safety_active,
+            handback_pending: handback.active,
             targets,
             confirmed_targets,
             sample_age_secs: (origin.elapsed().as_secs_f64() - snapshot.sampled_at).max(0.),

@@ -13,6 +13,7 @@ const TREND_PER_SECOND: f64 = 0.05;
 pub const DEFAULT_CUSTOM_PERCENT: f64 = 40.;
 /// Worker status for a fan whose takeover waits after a failed write.
 pub const HELD_STATUS: &str = "暂缓接管，稍后自动重试";
+const HANDBACK_PENDING_REASON: &str = "交还系统尚未确认；控制写入已暂停，正在重试。";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -80,6 +81,7 @@ pub fn present(state: &UiSnapshot, fresh: bool, demo: bool) -> Presentation {
     let controls_enabled = fresh
         && state.helper_ready
         && !state.installing
+        && !state.handback_pending
         && state.snapshot.fans.iter().any(Fan::controllable);
     Presentation {
         notice: notice(state, fresh, demo, plan),
@@ -172,6 +174,23 @@ fn notice(state: &UiSnapshot, fresh: bool, demo: bool, plan: Plan) -> Notice {
             "演示模式",
             "数据为模拟值，不会控制真实风扇。",
             None,
+        );
+    }
+    if state.handback_pending {
+        return notice(
+            if fan_core::missing_input_safety_percent(
+                state.snapshot.thermal_pressure,
+                state.snapshot.hottest_silicon(),
+            )
+            .is_some()
+            {
+                Tone::Danger
+            } else {
+                Tone::Warning
+            },
+            "交还系统尚未确认",
+            HANDBACK_PENDING_REASON,
+            Some(Action::Reconnect),
         );
     }
     if state.discovered && state.snapshot.fan_count == Some(0.) {
@@ -730,7 +749,9 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
             Some(value) if value < 70. => "中",
             Some(_) => "高",
         },
-        reason: if !available {
+        reason: if state.handback_pending {
+            HANDBACK_PENDING_REASON
+        } else if !available {
             "正在等待温度数据。"
         } else if state.safety_active
             && fan_core::missing_input_safety_percent(
@@ -854,6 +875,7 @@ mod tests {
             battery: None,
             configuration_notice: String::new(),
             safety_active: false,
+            handback_pending: false,
             targets: BTreeMap::new(),
             confirmed_targets: BTreeMap::new(),
             sample_age_secs: 0.,
@@ -1321,6 +1343,61 @@ mod tests {
             value: Some(96.),
         });
         assert!(smart_status(&state, true).reason.contains("安全保护"));
+    }
+
+    #[test]
+    fn unconfirmed_handback_overrides_old_targets_freshness_and_thermal_demand() {
+        let mut state = controlled_smart_state();
+        state.thermal.adaptive.demand_percent = 5.;
+        state.handback_pending = true;
+        state.safety_active = true;
+        for pressure in [ThermalPressure::Nominal, ThermalPressure::Critical] {
+            state.snapshot.thermal_pressure = pressure;
+            for (fresh, available, ready) in [
+                (true, true, true),
+                (false, true, true),
+                (true, false, false),
+            ] {
+                state.thermal.adaptive.available = available;
+                state.helper_ready = ready;
+                let smart = smart_status(&state, fresh);
+                assert_eq!(smart.reason, HANDBACK_PENDING_REASON);
+                let shown = present(&state, fresh, false);
+                assert_eq!(shown.notice.title, "交还系统尚未确认");
+                assert_eq!(shown.notice.action, Some(Action::Reconnect));
+                assert_eq!(shown.notice.body, HANDBACK_PENDING_REASON);
+                assert!(!shown.controls_enabled);
+                assert_eq!(
+                    shown.notice.tone,
+                    if pressure == ThermalPressure::Critical {
+                        Tone::Danger
+                    } else {
+                        Tone::Warning
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn thermal_override_and_confirmed_return_have_distinct_statuses() {
+        let mut state = controlled_smart_state();
+        state.safety_active = true;
+        state.snapshot.thermal_pressure = ThermalPressure::Critical;
+        assert!(!state.handback_pending);
+        assert!(smart_status(&state, true).reason.contains("安全保护"));
+        state.safety_active = false;
+        state.snapshot.thermal_pressure = ThermalPressure::Nominal;
+        state.handback_pending = true;
+        assert_eq!(smart_status(&state, true).reason, HANDBACK_PENDING_REASON);
+        // The worker only clears its published flag once fallback is confirmed.
+        state.handback_pending = false;
+        assert!(smart_status(&state, true).reason.contains("持续冷却"));
+        state.snapshot.fans[0].mode = HardwareMode::Automatic;
+        state.targets.insert(0, None);
+        state.confirmed_targets.insert(0, None);
+        assert!(smart_status(&state, true).reason.contains("交给系统"));
+        assert_eq!(present(&state, true, false).notice.tone, Tone::Good);
     }
 
     #[test]

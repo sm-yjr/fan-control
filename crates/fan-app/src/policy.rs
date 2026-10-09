@@ -486,8 +486,9 @@ impl PolicyEditor {
         };
         self.status.setTextColor(Some(&status_color));
         self.use_smart.setHidden(smart.in_use);
-        self.use_smart
-            .setEnabled(state.helper_ready && !state.installing && fresh);
+        self.use_smart.setEnabled(
+            state.helper_ready && !state.installing && !state.handback_pending && fresh,
+        );
         let comfort = match (
             self.enabled.state() == NSControlStateValueOn,
             reading.estimated_surface_celsius.filter(|_| fresh),

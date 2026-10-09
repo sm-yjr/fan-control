@@ -472,6 +472,8 @@ const CATALOG: &[Text] = texts![
     ("macOS 正在限制性能以控制温度。", "macOS is limiting performance to control temperature."),
     ("安全保护已临时接管，温度回落后恢复你的设置。", "Safety protection has taken over for now. Your settings return once it cools down."),
     ("风扇已交还系统", "Fans returned to the system"),
+    ("交还系统尚未确认", "System handback is not yet confirmed"),
+    ("交还系统尚未确认；控制写入已暂停，正在重试。", "System handback is not yet confirmed. Control writes are paused while retrying."),
     ("控制服务暂时没有响应，macOS 已安全接管风扇。", "The control service isn't responding, so macOS has safely taken over the fans."),
     ("需要更新风扇控制组件", "Fan control component needs an update"),
     ("更新需要一次管理员授权，温度可以照常查看。", "Updating needs administrator approval once. Temperatures stay visible."),
