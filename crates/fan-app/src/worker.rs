@@ -601,6 +601,7 @@ fn run(
         "gui.worker.start"
     });
     let origin = Instant::now();
+    let mut widget = crate::widget::Publisher::new(demo);
     let client = HelperClient::default();
     let mut cpu_monitor = if demo {
         None
@@ -835,6 +836,13 @@ fn run(
             }
             Ok(WorkerCommand::Sleep(reply)) => {
                 crate::telemetry::event("power.sleep.handback");
+                if let Some(widget) = widget.as_mut() {
+                    widget.publish(
+                        &snapshot,
+                        (origin.elapsed().as_secs_f64() - snapshot.sampled_at).max(0.),
+                        "sleeping",
+                    );
+                }
                 paused = true;
                 if let Some(monitor) = cpu_monitor.as_mut() {
                     monitor.reset();
@@ -859,6 +867,13 @@ fn run(
             }
             Ok(WorkerCommand::Wake) => {
                 crate::telemetry::event("power.wake.restore");
+                if let Some(widget) = widget.as_mut() {
+                    widget.publish(
+                        &snapshot,
+                        (origin.elapsed().as_secs_f64() - snapshot.sampled_at).max(0.),
+                        "starting",
+                    );
+                }
                 paused = false;
                 if let Some(monitor) = cpu_monitor.as_mut() {
                     monitor.reset();
@@ -872,6 +887,13 @@ fn run(
             }
             Ok(WorkerCommand::Shutdown(reply)) => {
                 crate::telemetry::event("gui.shutdown.handback");
+                if let Some(widget) = widget.as_mut() {
+                    widget.publish(
+                        &snapshot,
+                        (origin.elapsed().as_secs_f64() - snapshot.sampled_at).max(0.),
+                        "stopped",
+                    );
+                }
                 // A read-only session did not acquire a control lease; an old
                 // or absent helper need not produce a misleading exit error.
                 let ok = if demo || (!handback.controlled && !handback.active) {
@@ -885,6 +907,13 @@ fn run(
                 break;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(widget) = widget.as_mut() {
+                    widget.publish(
+                        &snapshot,
+                        (origin.elapsed().as_secs_f64() - snapshot.sampled_at).max(0.),
+                        "stopped",
+                    );
+                }
                 if !demo && (handback.controlled || handback.active) {
                     let _ = client.reset_all();
                 }
@@ -1182,6 +1211,15 @@ fn run(
             );
             for status in statuses.values_mut() {
                 *status = "交还系统未确认，RPM 写入已暂停".into();
+            }
+        }
+        if !paused {
+            if let Some(widget) = widget.as_mut() {
+                widget.publish(
+                    &snapshot,
+                    (origin.elapsed().as_secs_f64() - snapshot.sampled_at).max(0.),
+                    "running",
+                );
             }
         }
         let published_at = Instant::now();

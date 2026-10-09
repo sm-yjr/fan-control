@@ -91,6 +91,185 @@ fn unlayer(view: &NSView) {
         unlayer(&child);
     }
 }
+/// A native, unshown window hosts the production panel. Unlike the screenshot
+/// checks, this follows complete timer updates and observes every size commit.
+fn verify_refresh_stability(
+    mtm: MainThreadMarker,
+    target: &NSObject,
+    width: f64,
+    count: usize,
+) -> serde_json::Value {
+    use crate::popover::DashboardUpdate;
+    let mut panel = crate::popover::MenuPanel::with_width(mtm, target, width);
+    let content = panel.diagnostic_view().retain();
+    let window = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            NSRect::new(
+                NSPoint::new(200., 200.),
+                objc2_foundation::NSSize::new(width, 700.),
+            ),
+            NSWindowStyleMask::Borderless,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    unsafe {
+        window.setReleasedWhenClosed(false);
+    }
+    window.setContentView(Some(&content));
+    let mut history = crate::trend::History::default();
+    let mut phases = Vec::new();
+    for phase in [
+        "system",
+        "smart-default",
+        "smart-cooler",
+        "smart-quieter",
+        "custom",
+        "curve",
+        "mixed",
+        "warning",
+        "stale",
+        "missing",
+        "unknown-range",
+        "dual-topology",
+        "single-topology",
+        "saving",
+        "saved",
+        "save-error",
+        "notice-hidden",
+    ] {
+        let bias = if phase == "smart-cooler" {
+            10
+        } else if phase == "smart-quieter" {
+            -10
+        } else {
+            0
+        };
+        let active_count = match phase {
+            "dual-topology" => 2,
+            "single-topology" => 1,
+            _ => count,
+        };
+        let mut state = fixture(active_count, phase == "missing", bias);
+        for f in &mut state.config.fans {
+            f.mode = match phase {
+                "system" => ControlMode::Automatic,
+                "custom" => ControlMode::Manual { rpm: 2500 },
+                "curve" => ControlMode::Curve {
+                    curve_id: "diagnostic-only".into(),
+                },
+                "mixed" if f.fan_id == 0 => ControlMode::Automatic,
+                _ => ControlMode::Adaptive,
+            };
+        }
+        if phase == "warning" {
+            state.helper_ready = false;
+        }
+        if phase == "unknown-range" {
+            for f in &mut state.snapshot.fans {
+                f.min_rpm = None;
+                f.max_rpm = None;
+            }
+        }
+        let fresh = phase != "stale";
+        let mut presentation = present(&state, fresh, false);
+        let mut cards = fan_cards(&state, fresh);
+        let pending = (phase == "saving").then_some(10);
+        match phase {
+            "saved" => panel.preference_result(Ok(())),
+            "save-error" => panel.preference_result(Err(
+                "simulated persistence failure with a longer explanation".into(),
+            )),
+            "notice-hidden" => panel.clear_diagnostic_notice(),
+            _ => {}
+        }
+        let revision = panel.diagnostic_size_revision();
+        panel.refresh(
+            &presentation,
+            None,
+            DashboardUpdate {
+                cards: &cards,
+                history: &history,
+                bias,
+                pending,
+                saving: pending.is_some(),
+            },
+        );
+        assert!(
+            panel.diagnostic_size_revision() - revision <= 1,
+            "multiple size commits in {phase}"
+        );
+        let size = panel.popover.contentSize();
+        let old = window.frame();
+        // The diagnostic host keeps its existing top anchor on a real section change.
+        window.setContentSize(size);
+        let resized = window.frame();
+        window.setFrameOrigin(NSPoint::new(
+            old.origin.x,
+            old.origin.y + old.size.height - resized.size.height,
+        ));
+        content.setFrame(NSRect::new(NSPoint::new(0., 0.), size));
+        content.layoutSubtreeIfNeeded();
+        panel.verify_layout(&cards);
+        let frame = window.frame();
+        let top = frame.origin.y + frame.size.height;
+        let revision = panel.diagnostic_size_revision();
+        for tick in 0..32 {
+            if fresh && phase != "missing" {
+                presentation.temperature = Some([55., 56., 99., 100.][tick % 4]);
+                presentation.trend = ["平稳", "上升中", "回落中"][tick % 3];
+                for card in &mut cards {
+                    card.measured_rpm = Some([3083., 3090., 999., 1000., 9999., 10000.][tick % 6]);
+                    card.detail =
+                        ["智能散热", "由系统控制", "正在交还系统", "转速未知"][tick % 4].into();
+                }
+            }
+            history.record(crate::trend::Sample {
+                at: Instant::now(),
+                temperature: presentation.temperature,
+                fan_percent: None,
+            });
+            // Closing an already hidden panel and continuing its timer must not
+            // accumulate a size/position drift before the next opening.
+            if tick == 16 {
+                panel.close();
+                window.orderOut(None);
+            }
+            panel.refresh(
+                &presentation,
+                None,
+                DashboardUpdate {
+                    cards: &cards,
+                    history: &history,
+                    bias,
+                    pending,
+                    saving: pending.is_some(),
+                },
+            );
+            content.layoutSubtreeIfNeeded();
+            panel.verify_layout(&cards);
+            assert_eq!(
+                panel.popover.contentSize(),
+                size,
+                "size drift in {phase} tick {tick}"
+            );
+            assert_eq!(
+                panel.diagnostic_size_revision(),
+                revision,
+                "redundant size commit in {phase} tick {tick}"
+            );
+            assert_eq!(
+                window.frame(),
+                frame,
+                "native host frame drift in {phase} tick {tick}"
+            );
+            assert_eq!(window.frame().origin.y + window.frame().size.height, top);
+        }
+        phases.push(serde_json::json!({"phase":phase,"fan_count":cards.len(),"ticks":32,"size": {"width":size.width,"height":size.height},"native_host_frame_stable":true,"popover_content_size_stable":true,"repeat_size_commits":0,"geometry_passed":true}));
+    }
+    serde_json::json!({"width":width,"fan_count":count,"phases":phases,"window_shown":false,"production_popover_show_hide": "not verified; unshown host only"})
+}
 pub fn run() {
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
@@ -101,6 +280,7 @@ pub fn run() {
         .unwrap_or_else(|| PathBuf::from("/tmp/fan-control-dashboard-render"));
     std::fs::create_dir_all(&output).expect("diagnostic output directory");
     let mut reports = Vec::new();
+    let mut refresh_reports = Vec::new();
     for (language, lang) in [
         ("zh", crate::i18n::Lang::Chinese),
         ("en", crate::i18n::Lang::English),
@@ -110,6 +290,14 @@ pub fn run() {
             ("dark", unsafe { NSAppearanceNameDarkAqua }),
         ] {
             for width in [400., 340.] {
+                if theme == "light" {
+                    crate::i18n::set_override(lang);
+                    for count in [1, 2] {
+                        let mut report = verify_refresh_stability(mtm, &target, width, count);
+                        report["language"] = serde_json::json!(language);
+                        refresh_reports.push(report);
+                    }
+                }
                 for (scene, count, missing) in [
                     ("single", 1, false),
                     ("dual", 2, false),
@@ -159,8 +347,17 @@ pub fn run() {
                         }
                     }
                     panel.mark_diagnostic();
-                    panel.refresh(&presentation, None);
-                    panel.refresh_dashboard(&presentation, &cards, &history, 0, None, false);
+                    panel.refresh(
+                        &presentation,
+                        None,
+                        crate::popover::DashboardUpdate {
+                            cards: &cards,
+                            history: &history,
+                            bias: 0,
+                            pending: None,
+                            saving: false,
+                        },
+                    );
                     let view = panel.diagnostic_view().retain();
                     let appearance =
                         NSAppearance::appearanceNamed(appearance).expect("system appearance");
@@ -186,18 +383,58 @@ pub fn run() {
                     panel.verify_layout(&cards);
                     // Exercise the full discrete preference range in the actual production controls.
                     for bias in -10..=10 {
-                        panel.refresh_dashboard(&presentation, &cards, &history, bias, None, false);
+                        panel.refresh(
+                            &presentation,
+                            None,
+                            crate::popover::DashboardUpdate {
+                                cards: &cards,
+                                history: &history,
+                                bias,
+                                pending: None,
+                                saving: false,
+                            },
+                        );
                         view.layoutSubtreeIfNeeded();
                         panel.verify_layout(&cards);
                         assert_eq!(panel.preference.doubleValue(), bias as f64);
                     }
-                    panel.refresh_dashboard(&presentation, &cards, &history, 0, None, false);
+                    panel.refresh(
+                        &presentation,
+                        None,
+                        crate::popover::DashboardUpdate {
+                            cards: &cards,
+                            history: &history,
+                            bias: 0,
+                            pending: None,
+                            saving: false,
+                        },
+                    );
                     view.layoutSubtreeIfNeeded();
-                    panel.refresh_dashboard(&presentation, &cards, &history, 0, Some(10), true);
+                    panel.refresh(
+                        &presentation,
+                        None,
+                        crate::popover::DashboardUpdate {
+                            cards: &cards,
+                            history: &history,
+                            bias: 0,
+                            pending: Some(10),
+                            saving: true,
+                        },
+                    );
                     assert!(!panel.preference.isEnabled());
                     assert_eq!(panel.preference.doubleValue(), 10.);
                     panel.preference_result(Err("simulated disk full".into()));
-                    panel.refresh_dashboard(&presentation, &cards, &history, 0, None, false);
+                    panel.refresh(
+                        &presentation,
+                        None,
+                        crate::popover::DashboardUpdate {
+                            cards: &cards,
+                            history: &history,
+                            bias: 0,
+                            pending: None,
+                            saving: false,
+                        },
+                    );
                     assert_eq!(panel.preference.doubleValue(), 0.);
                     assert!(panel.preference.isEnabled());
                     panel.clear_diagnostic_notice();
@@ -243,7 +480,7 @@ pub fn run() {
             }
         }
     }
-    let result = serde_json::json!({"hardware_access":false,"user_configuration_access":false,"desktop_activated":false,"scenes":reports});
+    let result = serde_json::json!({"hardware_access":false,"user_configuration_access":false,"desktop_activated":false,"scenes":reports,"refresh_stability":refresh_reports});
     std::fs::write(
         output.join("report.json"),
         serde_json::to_vec_pretty(&result).unwrap(),

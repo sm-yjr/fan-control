@@ -12,10 +12,10 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, NSTimer, NSUserDefaults,
+    MainThreadMarker, NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSTimer, NSUserDefaults, NSURL,
 };
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 pub(crate) mod tokens {
     pub const WIDTH: f64 = 620.0;
@@ -190,6 +190,7 @@ struct Ui {
     panel_opened: bool,
 }
 struct Ivars {
+    widget_open_requested: Cell<bool>,
     ui: RefCell<Option<Ui>>,
     demo: bool,
     smoke: bool,
@@ -203,9 +204,16 @@ define_class!(
     struct Delegate;
     unsafe impl NSObjectProtocol for Delegate {}
     unsafe impl NSApplicationDelegate for Delegate {
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            if urls.iter().any(|url| url.absoluteString().is_some_and(|url| url.to_string() == "fancontrol://dashboard")) {
+                if let Some(ui) = self.ivars().ui.borrow().as_ref() { ui.show_tab(TAB_OVERVIEW); } else { self.ivars().widget_open_requested.set(true); }
+            }
+        }
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn launched(&self,_notification:&NSNotification) {
             let ui=Ui::new(self,self.ivars().demo);
+            if self.ivars().widget_open_requested.replace(false) { ui.show_tab(TAB_OVERVIEW); }
             self.ivars().ui.replace(Some(ui));
             let timer=unsafe { NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(0.5,self,sel!(tick:),None,true) };
             let _=self.ivars().timer.set(timer);
@@ -546,6 +554,7 @@ define_class!(
 impl Delegate {
     fn new(mtm: MainThreadMarker, demo: bool, smoke: bool) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
+            widget_open_requested: Cell::new(false),
             ui: RefCell::new(None),
             demo,
             smoke,
@@ -968,15 +977,16 @@ impl Ui {
             fan_percent: view.fan_percent,
         });
         let cards = crate::presenter::fan_cards(&state, fresh);
-        self.panel
-            .refresh(&view, self.pending_speed.map(|(percent, _)| percent));
-        self.panel.refresh_dashboard(
+        self.panel.refresh(
             &view,
-            &cards,
-            &self.history,
-            state.config.adaptive_tuning.bias,
-            self.pending_panel_tuning.map(|(_, b)| b),
-            self.pending_policy_save.is_some() || state.installing,
+            self.pending_speed.map(|(percent, _)| percent),
+            crate::popover::DashboardUpdate {
+                cards: &cards,
+                history: &self.history,
+                bias: state.config.adaptive_tuning.bias,
+                pending: self.pending_panel_tuning.map(|(_, b)| b),
+                saving: self.pending_policy_save.is_some() || state.installing,
+            },
         );
         if self.window.isVisible() {
             self.overview.refresh(&view, &self.history);

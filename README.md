@@ -163,3 +163,9 @@ hdiutil verify dist/FanControl-0.3.1.dmg
 ## 许可证
 
 Fan Control 采用 [GNU General Public License v3.0 only](LICENSE)。Sparkle 与 Rust 依赖的许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 桌面 Widget
+
+0.5.0 提供原生 WidgetKit 小号和中号 Widget：CPU 温度、实测 RPM 和最近 10 分钟的历史趋势。点按可打开主 App。它只读主 App 的 App Group 快照，不能控制风扇或连接 root helper。需运行主 App 采集数据；macOS 管理刷新，Widget 不保证实时更新，显示采样时刻和过期/停止状态。
+
+CLT 构建扩展由 `script/build_widget.sh` 完成，`script/test_widget.sh` 验证共享数据协议。发布验收状态见 [Widget 验收清单](docs/widget-acceptance.md)。

@@ -4,6 +4,7 @@ set -euo pipefail
 APP="${1:?usage: sign_app.sh <app> <identity> [timestamp]}"
 IDENTITY="${2:?usage: sign_app.sh <app> <identity> [timestamp]}"
 USE_TIMESTAMP="${3:-0}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
 HELPER="$APP/Contents/Library/LaunchServices/com.local.fan-control.helper"
 
@@ -48,7 +49,18 @@ sign_target "$SPARKLE_FRAMEWORK/Versions/Current/Autoupdate"
 sign_target "$SPARKLE_FRAMEWORK/Versions/Current/Updater.app"
 sign_target "$SPARKLE_FRAMEWORK"
 sign_target "$HELPER" --identifier "com.local.fan-control.helper"
-sign_target "$APP"
+# The privileged helper never receives App Group or sandbox entitlements.
+sign_target "$APP/Contents/Frameworks/FanControlWidgetBridge.dylib"
+sign_target "$APP/Contents/PlugIns/FanControlWidget.appex" --entitlements "$ROOT_DIR/Widget/Widget.entitlements"
+sign_target "$APP" --entitlements "$ROOT_DIR/Widget/App.entitlements"
+
+if [[ "$IDENTITY" != "-" ]]; then
+  signature_metadata="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+  if [[ "$signature_metadata" != *"TeamIdentifier=JFC5CWT3V6"* ]]; then
+    echo "error: Widget App Group requires the Fan Control signing team JFC5CWT3V6" >&2
+    exit 1
+  fi
+fi
 
 codesign --verify --strict --verbose=2 "$HELPER"
 codesign --verify --deep --strict --verbose=2 "$APP"

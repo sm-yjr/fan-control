@@ -34,6 +34,9 @@ jobs:
       - name: Check Rust formatting, lints and tests
         run: ./script/test_rust.sh
 
+      - name: Verify Widget snapshot contract
+        run: ./script/test_widget.sh
+
       - name: Build Rust app
         run: cargo build --locked --package fan-app --bin FanControl
 
@@ -53,6 +56,7 @@ jobs:
           APP="dist/FanControl.app"
           HELPER="$APP/Contents/Library/LaunchServices/com.local.fan-control.helper"
           plutil -lint "$APP/Contents/Info.plist"
+          python3 script/verify_widget_bundle.py "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --strict --verbose=2 "$HELPER"
           test -x "$APP/Contents/MacOS/FanControl"
