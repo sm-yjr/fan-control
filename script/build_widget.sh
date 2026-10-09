@@ -10,7 +10,7 @@ EXT="$APP/Contents/PlugIns/FanControlWidget.appex"
 mkdir -p "$EXT/Contents/MacOS" "$EXT/Contents/Resources" "$CACHE" "$APP/Contents/Frameworks"
 common=(-sdk "$SDK" -target arm64-apple-macosx14.0 -module-cache-path "$CACHE" -O)
 xcrun swiftc "${common[@]}" -parse-as-library -application-extension \
-  "$ROOT_DIR/Widget/Models/Reading.swift" "$ROOT_DIR/Widget/Views/ReadingView.swift" \
+  "$ROOT_DIR/Widget/Models/Reading.swift" "$ROOT_DIR/Widget/Models/DialGeometry.swift" "$ROOT_DIR/Widget/Views/ReadingView.swift" \
   "$ROOT_DIR/Widget/Views/TemperatureTrend.swift" "$ROOT_DIR/Widget/FanControlWidget.swift" \
   -Xlinker -e -Xlinker _NSExtensionMain \
   -o "$EXT/Contents/MacOS/FanControlWidget"
