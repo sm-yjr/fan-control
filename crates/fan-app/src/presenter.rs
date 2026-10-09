@@ -785,10 +785,15 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
             match reading.intervention {
                 Why::Idle if !actively_controlled => "负载较低，风扇交给系统，保持安静。",
                 Why::Idle
-                    if state.config.adaptive_tuning.bias > 0
-                        && effective_demand > reading.demand_percent =>
+                    if reading.adjusted_demand_percent.is_some_and(|adjusted| {
+                        adjusted > reading.demand_percent && effective_demand <= adjusted
+                    }) =>
                 {
-                    "正在按散热偏好维持主动散热。恢复默认后可随冷却交还系统。"
+                    if state.config.adaptive_tuning.bias > 0 {
+                        "正在按散热偏好维持主动散热。恢复默认后可随冷却交还系统。"
+                    } else {
+                        "散热偏好正在平滑调整。"
+                    }
                 }
                 Why::Idle => "正在按持续热负载平稳调节风扇。",
                 Why::Temperature => "正在按持续热负载平稳调节风扇。",
@@ -1360,6 +1365,13 @@ mod tests {
         state.config.adaptive_tuning.bias = 10;
         state.thermal.adaptive.adjusted_demand_percent = Some(20.);
         assert!(smart_status(&state, true).reason.contains("散热偏好"));
+        for bias in [0, -10] {
+            state.config.adaptive_tuning.bias = bias;
+            assert!(smart_status(&state, true).reason.contains("平滑调整"));
+        }
+        state.snapshot.thermal_pressure = ThermalPressure::Fair;
+        assert!(!smart_status(&state, true).reason.contains("平滑调整"));
+        state.snapshot.thermal_pressure = ThermalPressure::Nominal;
         state.snapshot.fans[0].mode = HardwareMode::Automatic;
         state.targets.insert(0, None);
         state.confirmed_targets.insert(0, None);
