@@ -185,6 +185,7 @@ struct Ui {
     demo: bool,
     policy: Option<crate::policy::PolicyEditor>,
     pending_policy_save: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    pending_panel_tuning: Option<(i8, i8)>,
     last_visible: bool,
     panel_opened: bool,
 }
@@ -485,6 +486,10 @@ define_class!(
         fn cooling_preference(&self,_sender:&NSSlider){if let Some(ui)=self.ivars().ui.borrow().as_ref(){if let Some(policy)=ui.policy.as_ref(){policy.preference_changed();}}}
         #[unsafe(method(resetCoolingPreference:))]
         fn reset_cooling_preference(&self,_sender:&NSButton){if let Some(ui)=self.ivars().ui.borrow().as_ref(){if let Some(policy)=ui.policy.as_ref(){policy.reset_preference();}}}
+        #[unsafe(method(panelCoolingPreference:))]
+        fn panel_cooling_preference(&self,sender:&NSSlider){if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){ui.save_panel_tuning(sender.doubleValue().round().clamp(-10.,10.) as i8);}}
+        #[unsafe(method(resetPanelCoolingPreference:))]
+        fn reset_panel_cooling_preference(&self,_sender:&NSButton){if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){ui.save_panel_tuning(0);}}
         #[unsafe(method(comfortToggle:))]
         fn comfort_toggle(&self,_sender:Option<&AnyObject>) {if let Some(ui)=self.ivars().ui.borrow_mut().as_mut(){if let Some(policy)=ui.policy.as_mut(){policy.refresh(&ui.worker.snapshot());}}}
         #[unsafe(method(recordCalibration:))]
@@ -708,6 +713,7 @@ impl Ui {
             demo,
             policy: None,
             pending_policy_save: None,
+            pending_panel_tuning: None,
             last_visible: true,
             panel_opened: false,
         };
@@ -778,6 +784,23 @@ impl Ui {
         policy.set_saving(self.pending_policy_save.is_some(), state.installing);
         self.policy = Some(policy);
     }
+    fn save_panel_tuning(&mut self, bias: i8) {
+        if self.pending_policy_save.is_some() {
+            return;
+        }
+        let previous = self.worker.snapshot().config.adaptive_tuning.bias;
+        let (tx, rx) = std::sync::mpsc::channel();
+        match self.worker.send(WorkerCommand::ConfigureTuning {
+            tuning: fan_core::AdaptiveTuning { bias },
+            reply: tx,
+        }) {
+            Ok(()) => {
+                self.pending_policy_save = Some(rx);
+                self.pending_panel_tuning = Some((previous, bias));
+            }
+            Err(e) => self.panel.preference_result(Err(e)),
+        }
+    }
     fn save_policy(&mut self) {
         if self.pending_policy_save.is_some() {
             return;
@@ -817,6 +840,15 @@ impl Ui {
             });
         if let Some(result) = result {
             self.pending_policy_save = None;
+            if let Some((previous, bias)) = self.pending_panel_tuning.take() {
+                if result.is_ok() {
+                    if let Some(policy) = self.policy.as_ref() {
+                        policy.sync_saved_preference(previous, bias);
+                    }
+                }
+                self.panel.preference_result(result);
+                return;
+            }
             if result.is_ok() {
                 self.build_policy(target);
             }
@@ -873,6 +905,39 @@ impl Ui {
         self.policy.as_ref().unwrap().smoke_preference(10);
         self.close_policy(target);
         assert_eq!(self.policy.as_ref().unwrap().tuning().bias, -7);
+        // Inline panel: error/disconnect roll back to accepted config, duplicate saves cannot replace it.
+        let previous = self.worker.snapshot().config.adaptive_tuning.bias;
+        self.policy.as_ref().unwrap().smoke_preference(10); // unrelated editor draft stays intact
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_policy_save = Some(rx);
+        self.pending_panel_tuning = Some((previous, 6));
+        self.save_panel_tuning(10);
+        assert_eq!(self.pending_panel_tuning, Some((previous, 6)));
+        tx.send(Err("simulated disk full".into())).unwrap();
+        self.poll_policy_save(target);
+        assert_eq!(self.worker.snapshot().config.adaptive_tuning.bias, previous);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_policy_save = Some(rx);
+        self.pending_panel_tuning = Some((previous, 6));
+        drop(tx);
+        self.poll_policy_save(target);
+        assert_eq!(self.worker.snapshot().config.adaptive_tuning.bias, previous);
+        for bias in [6, 0] {
+            self.save_panel_tuning(bias);
+            self.save_panel_tuning(10);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while self.pending_policy_save.is_some() && std::time::Instant::now() < deadline {
+                self.poll_policy_save(target);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(self.pending_policy_save.is_none());
+            assert_eq!(self.worker.snapshot().config.adaptive_tuning.bias, bias);
+            assert_eq!(self.worker.snapshot().config.fans, modes);
+        }
+        assert_eq!(self.policy.as_ref().unwrap().tuning().bias, 10);
+        self.close_policy(target);
+        assert_eq!(self.policy.as_ref().unwrap().tuning().bias, 0);
+        println!("Inline preference: error/disconnect rollback, duplicate save, acknowledged save/reset and unrelated editor draft verified");
         println!("Smart preference: 21 native positions, reset, failure/disconnect feedback, duplicate save and reopen verified in demo mode");
     }
     fn close_policy(&mut self, target: &AnyObject) {
@@ -902,8 +967,17 @@ impl Ui {
             temperature: view.temperature,
             fan_percent: view.fan_percent,
         });
+        let cards = crate::presenter::fan_cards(&state, fresh);
         self.panel
             .refresh(&view, self.pending_speed.map(|(percent, _)| percent));
+        self.panel.refresh_dashboard(
+            &view,
+            &cards,
+            &self.history,
+            state.config.adaptive_tuning.bias,
+            self.pending_panel_tuning.map(|(_, b)| b),
+            self.pending_policy_save.is_some() || state.installing,
+        );
         if self.window.isVisible() {
             self.overview.refresh(&view, &self.history);
         }
@@ -920,7 +994,6 @@ impl Ui {
                 self.selected = self.fan_ids.first().copied();
             }
         }
-        let cards = crate::presenter::fan_cards(&state, fresh);
         let resized = self.fans.refresh(
             target,
             &view,

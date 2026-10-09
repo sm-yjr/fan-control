@@ -199,7 +199,7 @@ impl PolicyEditor {
         selection.addArrangedSubview(&preference_reset);
         let preference_card = group(mtm, &[&preference_group, &selection]);
         view.addArrangedSubview(&preference_card);
-        view.addArrangedSubview(&caption(mtm, "无需校准。更安静会适度降低日常散热，更凉快会加强散热；高温保护始终优先。内部温度不代表机壳表面实测温度。保存偏好不会切换风扇模式。", CONTENT));
+        view.addArrangedSubview(&caption(mtm, "无需校准。更安静会适度降低日常散热；更凉快每档增加 2 个散热需求百分点，最多增加 20 个百分点，上限 100%。高档位可在空闲时保持主动散热。高温保护始终优先。保存偏好不会切换风扇模式。", CONTENT));
 
         // Optional comfort target, only active after a two-point calibration.
         view.addArrangedSubview(&section_title(mtm, "键盘体感目标（可选）"));
@@ -544,6 +544,13 @@ impl PolicyEditor {
             .setEnabled(!saving && self.enabled.state() == NSControlStateValueOn);
     }
     /// Diagnostic-only interaction; the smoke caller uses the simulated worker.
+    /// Keep unrelated calibration drafts; synchronize only an untouched preference.
+    pub fn sync_saved_preference(&self, previous: i8, bias: i8) {
+        if self.tuning().bias == previous {
+            self.preference.setDoubleValue(bias as f64);
+            self.preference_changed();
+        }
+    }
     pub fn smoke_preference(&self, bias: i8) {
         self.preference.setDoubleValue(f64::from(bias));
         self.preference_changed();

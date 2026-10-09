@@ -39,6 +39,12 @@ pub fn smooth_adaptive_bias(previous: f64, target: AdaptiveTuning, elapsed: f64)
 /// Temperature gating only removes quieter reductions, never cooler additions.
 pub fn tuned_adaptive_demand(demand: f64, bias: f64, hottest: f64) -> f64 {
     let demand = demand.clamp(0.0, 100.0);
+    // Cooler is an absolute demand offset: +1 position adds 2 percentage
+    // points, including at idle; +10 adds 20, with saturation at 100.
+    if bias >= 0.0 {
+        return (demand + 20.0 * bias.clamp(0.0, 1.0)).clamp(0.0, 100.0);
+    }
+    // Preserve the existing quieter envelope and high-temperature gating.
     let x = demand / 100.0;
     let hot = ((hottest - 80.0) / 10.0).clamp(0.0, 1.0);
     let gate = if bias < 0.0 {

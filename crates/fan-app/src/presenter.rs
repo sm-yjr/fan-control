@@ -148,7 +148,7 @@ pub fn present(state: &UiSnapshot, fresh: bool, demo: bool) -> Presentation {
                     .iter()
                     .filter_map(|fan| {
                         let (minimum, maximum) = validated_rpm_range(fan.min_rpm, fan.max_rpm)?;
-                        let rpm = fan.current_rpm?;
+                        let rpm = measured_fan_rpm(fan, fresh)?;
                         Some(if rpm < STOPPED_RPM {
                             0.
                         } else {
@@ -321,11 +321,23 @@ fn configured(state: &UiSnapshot, id: u8) -> ControlMode {
         .unwrap_or_default()
 }
 
+/// Only fresh, finite nonnegative tachometer readings are measured speeds.
+/// Requested targets, confirmation and cooling preferences never enter this value.
+fn measured_fan_rpm(fan: &Fan, fresh: bool) -> Option<f64> {
+    fresh
+        .then(|| {
+            fan.current_rpm.filter(|rpm| {
+                rpm.is_finite() && (0.0..=fan_core::ABSOLUTE_MAXIMUM_RPM as f64).contains(rpm)
+            })
+        })
+        .flatten()
+}
+
 fn fan_line(state: &UiSnapshot, fan: &Fan, fresh: bool) -> FanLine {
-    let speed = match (fresh, fan.current_rpm) {
-        (false, _) | (_, None) => "转速未知".to_string(),
-        (true, Some(rpm)) if rpm < STOPPED_RPM => "停转".to_string(),
-        (true, Some(rpm)) => format!("{} 转/分", grouped(rpm.round() as u64)),
+    let speed = match measured_fan_rpm(fan, fresh) {
+        None => "转速未知".to_string(),
+        Some(rpm) if rpm < STOPPED_RPM => "停转".to_string(),
+        Some(rpm) => format!("{} 转/分", grouped(rpm.round() as u64)),
     };
     let detail = if !fresh {
         "状态未知".to_string()
@@ -556,6 +568,9 @@ impl FanChoice {
 pub struct FanCard {
     pub id: u8,
     pub name: String,
+    /// Fresh tachometer value; available even when the hardware range is unknown.
+    /// Separate from configured, requested or acknowledged speeds.
+    pub measured_rpm: Option<f64>,
     /// Tachometer reading as a share of the hardware range; 0 when stopped.
     pub percent: Option<f64>,
     pub speed: String,
@@ -580,10 +595,11 @@ pub fn fan_cards(state: &UiSnapshot, fresh: bool) -> Vec<FanCard> {
             FanCard {
                 id: fan.id,
                 name: line.name,
+                measured_rpm: measured_fan_rpm(fan, fresh),
                 percent: fresh
                     .then(|| {
                         let (minimum, maximum) = range?;
-                        let rpm = fan.current_rpm?;
+                        let rpm = measured_fan_rpm(fan, fresh)?;
                         Some(if rpm < STOPPED_RPM {
                             0.
                         } else {
@@ -768,6 +784,12 @@ pub fn smart_status(state: &UiSnapshot, fresh: bool) -> SmartStatus {
         } else {
             match reading.intervention {
                 Why::Idle if !actively_controlled => "负载较低，风扇交给系统，保持安静。",
+                Why::Idle
+                    if state.config.adaptive_tuning.bias > 0
+                        && effective_demand > reading.demand_percent =>
+                {
+                    "正在按散热偏好维持主动散热。恢复默认后可随冷却交还系统。"
+                }
                 Why::Idle => "正在按持续热负载平稳调节风扇。",
                 Why::Temperature => "正在按持续热负载平稳调节风扇。",
                 Why::LoadFeedForward => "检测到持续高负载，正在逐步增加散热。",
@@ -814,7 +836,7 @@ pub fn battery_lines(battery: &fan_platform::BatteryReading) -> (String, Vec<Str
     (state, details)
 }
 
-fn grouped(value: u64) -> String {
+pub(crate) fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
@@ -1122,6 +1144,98 @@ mod tests {
     }
 
     #[test]
+    fn measured_rpm_missing_stale_and_invalid_values_never_become_stopped() {
+        for reading in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(-1.),
+            Some(f64::from(fan_core::ABSOLUTE_MAXIMUM_RPM) + 1.),
+        ] {
+            let mut hardware = fan(7, 0., HardwareMode::Automatic);
+            hardware.current_rpm = reading;
+            let snapshot = state(vec![hardware], &[ControlMode::Automatic]);
+            for fresh in [true, false] {
+                let cards = fan_cards(&snapshot, fresh);
+                assert_eq!(cards[0].measured_rpm, None);
+                assert_eq!(cards[0].percent, None);
+                assert_eq!(cards[0].speed, "转速未知");
+                assert_eq!(present(&snapshot, fresh, false).fan_percent, None);
+            }
+        }
+        let snapshot = state(
+            vec![fan(7, 0., HardwareMode::Automatic)],
+            &[ControlMode::Automatic],
+        );
+        assert_eq!(fan_cards(&snapshot, true)[0].measured_rpm, Some(0.));
+        assert_eq!(fan_cards(&snapshot, true)[0].percent, Some(0.));
+        assert_eq!(fan_cards(&snapshot, true)[0].speed, "停转");
+        assert_eq!(fan_cards(&snapshot, false)[0].measured_rpm, None);
+    }
+
+    #[test]
+    fn measured_rpm_keeps_real_fan_identity_and_individual_hardware_ranges() {
+        let mut first = fan(7, 3000., HardwareMode::Forced);
+        first.name = "机箱风扇".into();
+        let mut second = fan(2, 2600., HardwareMode::Automatic);
+        second.name = "主风扇".into();
+        second.min_rpm = Some(1000.);
+        second.max_rpm = Some(5000.);
+        for fans in [
+            vec![],
+            vec![first.clone()],
+            vec![first.clone(), second.clone()],
+        ] {
+            let snapshot = state(fans.clone(), &vec![ControlMode::Automatic; fans.len()]);
+            let cards = fan_cards(&snapshot, true);
+            assert_eq!(cards.len(), fans.len());
+            for (card, hardware) in cards.iter().zip(&fans) {
+                assert_eq!(card.id, hardware.id);
+                assert_eq!(card.name, hardware.name);
+                assert_eq!(card.measured_rpm, hardware.current_rpm);
+            }
+            if let Some(card) = cards.first() {
+                assert_eq!(card.percent, Some(50.));
+            }
+            if let Some(card) = cards.get(1) {
+                assert_eq!(card.percent, Some(40.));
+            }
+        }
+        first.min_rpm = None;
+        let snapshot = state(vec![first], &[ControlMode::Automatic]);
+        let card = &fan_cards(&snapshot, true)[0];
+        assert_eq!(card.measured_rpm, Some(3000.));
+        assert_eq!(card.range, None);
+        assert_eq!(card.percent, None);
+        let snapshot = state(
+            vec![fan(7, 7000., HardwareMode::Automatic)],
+            &[ControlMode::Automatic],
+        );
+        assert_eq!(fan_cards(&snapshot, true)[0].measured_rpm, Some(7000.));
+        assert_eq!(fan_cards(&snapshot, true)[0].percent, Some(100.));
+    }
+
+    #[test]
+    fn every_preference_and_requested_target_preserves_measured_rpm() {
+        let mut snapshot = state(
+            vec![fan(7, 3000., HardwareMode::Forced)],
+            &[ControlMode::Adaptive],
+        );
+        for bias in -10..=10 {
+            snapshot.config.adaptive_tuning.bias = bias;
+            for target in [None, Some(1500), Some(4500)] {
+                snapshot.targets.insert(7, target);
+                snapshot.confirmed_targets.insert(7, target);
+                let card = &fan_cards(&snapshot, true)[0];
+                assert_eq!(card.measured_rpm, Some(3000.));
+                assert_eq!(card.percent, Some(50.));
+                assert_eq!(present(&snapshot, true, false).fan_percent, Some(50.));
+            }
+        }
+    }
+
+    #[test]
     fn fan_cards_show_measured_share_and_saved_choice() {
         let mut fans = vec![
             fan(0, 3000., HardwareMode::Forced),
@@ -1241,6 +1355,22 @@ mod tests {
     }
 
     #[test]
+    fn positive_idle_reason_requires_confirmed_active_control_and_preserves_pending_safety() {
+        let mut state = controlled_smart_state();
+        state.config.adaptive_tuning.bias = 10;
+        state.thermal.adaptive.adjusted_demand_percent = Some(20.);
+        assert!(smart_status(&state, true).reason.contains("散热偏好"));
+        state.snapshot.fans[0].mode = HardwareMode::Automatic;
+        state.targets.insert(0, None);
+        state.confirmed_targets.insert(0, None);
+        assert!(!smart_status(&state, true).reason.contains("维持主动"));
+        state.handback_pending = true;
+        assert_eq!(smart_status(&state, true).reason, HANDBACK_PENDING_REASON);
+        state.handback_pending = false;
+        assert_eq!(smart_status(&state, false).demand, None);
+    }
+
+    #[test]
     fn cooling_residence_checks_default_and_every_preference_position() {
         let mut state = controlled_smart_state();
         state.thermal.adaptive.demand_percent = 5.;
@@ -1256,7 +1386,7 @@ mod tests {
                 assert!(!shown.reason.contains("交给系统"), "bias {bias}");
             }
         }
-        assert!((fan_core::tuned_adaptive_demand(5., 1., 60.) - 6.52).abs() < 1e-10);
+        assert!((fan_core::tuned_adaptive_demand(5., 1., 60.) - 25.).abs() < 1e-10);
     }
 
     #[test]

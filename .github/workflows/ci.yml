@@ -82,6 +82,7 @@ jobs:
           APP_BINARY="dist/FanControl.app/Contents/MacOS/FanControl"
           FAN_CONTROL_DEMO_LANGUAGE=zh-Hans "$APP_BINARY" --ui-smoke
           FAN_CONTROL_DEMO_LANGUAGE=en "$APP_BINARY" --ui-smoke
+          FAN_CONTROL_RENDER_DIR="$RUNNER_TEMP/fan-control-dashboard-render" "$APP_BINARY" --dashboard-render
 
       - name: Verify DMG packaging
         run: |
