@@ -28,6 +28,9 @@ jobs:
       - name: Check Rust formatting, lints and tests
         run: ./script/test_rust.sh
 
+      - name: Verify Widget snapshot contract
+        run: ./script/test_widget.sh
+
       - name: Verify packaged Sparkle runtime
         run: ./script/test_update_runtime.sh
 
@@ -131,6 +134,7 @@ jobs:
             CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             ./script/package_app.sh
           codesign --verify --deep --strict --verbose=2 dist/FanControl.app
+          python3 script/verify_widget_bundle.py dist/FanControl.app
           HELPER="dist/FanControl.app/Contents/Library/LaunchServices/com.local.fan-control.helper"
           codesign --verify --strict --verbose=2 "$HELPER"
           if otool -L "$HELPER" | grep -Eq 'Sparkle\.framework|@rpath/|@executable_path/|@loader_path/'; then

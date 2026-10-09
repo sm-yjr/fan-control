@@ -25,6 +25,7 @@ mod telemetry;
 mod trend;
 mod ui;
 mod updater;
+mod widget;
 mod worker;
 
 use launch::LaunchMode;
@@ -37,6 +38,7 @@ fn main() {
         }
     };
     match mode {
+        LaunchMode::WidgetContainerCheck=>if let Err(error)=widget::check_container(){eprintln!("Widget container: {error}");std::process::exit(1);},
         LaunchMode::Helper=>if let Err(error)=fan_platform::run_helper(){eprintln!("helper: {error}");std::process::exit(1);},
         LaunchMode::ReadSensors=>match fan_platform::Smc::open(){
             Ok(mut smc)=>{let snapshot=match smc.discover_snapshot(){Ok(snapshot)=>snapshot,Err(error)=>{eprintln!("SMC snapshot: {error}");std::process::exit(1);}};println!("{}",serde_json::to_string_pretty(&snapshot).expect("serialize snapshot"));},
@@ -57,6 +59,6 @@ fn main() {
         },
         LaunchMode::DashboardRender=>dashboard_render::run(),
         LaunchMode::UiSmoke=>ui::run(true,true),
-        LaunchMode::Help=>println!("FanControl [--demo | --read-sensors | --check-updater-runtime | --package-info | --ui-smoke | --dashboard-render | --helper]\nDefault: native menu-bar application. --read-sensors only reads SMC; --demo never connects to hardware."),
+        LaunchMode::Help=>println!("FanControl [--demo | --read-sensors | --check-updater-runtime | --package-info | --check-widget-container | --ui-smoke | --dashboard-render | --helper]\nDefault: native menu-bar application. --read-sensors only reads SMC; --demo never connects to hardware."),
     }
 }

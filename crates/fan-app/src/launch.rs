@@ -7,6 +7,7 @@ pub enum LaunchMode {
     UiSmoke,
     DashboardRender,
     PackageInfo,
+    WidgetContainerCheck,
     Help,
 }
 impl LaunchMode {
@@ -22,6 +23,7 @@ impl LaunchMode {
                 "--dashboard-render" => Ok(Self::DashboardRender),
                 "--ui-smoke" => Ok(Self::UiSmoke),
                 "--package-info" => Ok(Self::PackageInfo),
+                "--check-widget-container" => Ok(Self::WidgetContainerCheck),
                 "--help" | "-h" => Ok(Self::Help),
                 _ => Err(format!("unknown argument: {arg}")),
             },

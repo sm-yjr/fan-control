@@ -13,7 +13,7 @@ SPARKLE_PUBLIC_KEY="/hvZor9jnQzV8BJYBLdNoyEAps0epZ1MvtMu8wq5ikg="
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-debug}"
-APP_VERSION="${APP_VERSION:-0.4.0}"
+APP_VERSION="${APP_VERSION:-0.5.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
 ARCHITECTURES="${ARCHITECTURES:-}"
@@ -130,7 +130,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_LAUNCH_SERVICES" "$APP_RESOURCES"
 ditto "$BUILD_BINARY" "$APP_BINARY"
 ditto "$BUILD_BINARY" "$HELPER_BINARY"
-ditto "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
+ditto --noextattr --norsrc "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 ditto "$ROOT_DIR/LICENSE" "$APP_RESOURCES/FanControl-LICENSE.txt"
 ditto "$SPARKLE_CACHE_DIR/LICENSE" "$APP_RESOURCES/Sparkle-LICENSE.txt"
 ditto "$ROOT_DIR/crates/fan-platform/licenses/Stats-LICENSE.txt" "$APP_RESOURCES/Stats-LICENSE.txt"
@@ -182,6 +182,8 @@ cat >"$INFO_PLIST" <<PLIST
   <true/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>CFBundleURLTypes</key>
+  <array><dict><key>CFBundleURLName</key><string>com.local.fan-control.dashboard</string><key>CFBundleURLSchemes</key><array><string>fancontrol</string></array></dict></array>
   <key>SUEnableAutomaticChecks</key>
   <true/>
   <key>SUFeedURL</key>
@@ -191,6 +193,8 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+
+APP_VERSION="$APP_VERSION" BUILD_NUMBER="$BUILD_NUMBER" "$ROOT_DIR/script/build_widget.sh" "$APP_BUNDLE"
 
 if [[ -n "$CODE_SIGN_IDENTITY" ]]; then
   echo "Signing with $CODE_SIGN_IDENTITY..."
