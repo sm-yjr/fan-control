@@ -9,8 +9,12 @@ import AppKit
         let now = Date()
         func fixture(count: Int, state: String = "running", missing: Bool = false) -> Reading {
             let time = now.timeIntervalSince1970
-            let fans = (0..<count).map { i -> [String: Any] in ["id": i, "name": "Fan \(i+1)", "rpm": missing ? NSNull() : 1430 + i * 60, "min_rpm": missing ? NSNull() : 1000, "max_rpm": missing ? NSNull() : 6000] }
-            let points = (0..<100).map { i in ["sampled_at": time - Double(100-i)*30, "temperature": 48 + sin(Double(i)/14)*5] }
+            let fans = (0..<count).map { i -> [String: Any] in ["id": i, "name": "Fan \(i+1)", "rpm": missing ? NSNull() : 3060 + i * 70, "min_rpm": missing ? NSNull() : 1000, "max_rpm": missing ? NSNull() : 6000] }
+            let points: [[String: Double]] = (0..<100).map { i in
+                let index = Double(i)
+                let temperature = 48.0 + sin(index / 3.0) * 3.0 + sin(index / 1.7)
+                return ["sampled_at": time - Double(100-i) * 30.0, "temperature": temperature]
+            }
             let object: [String: Any] = ["schema_version": 1, "written_at": time, "sampled_at": time-10, "state": state, "temperature": missing ? NSNull() : 54, "fan_count": count, "fans": fans, "history": missing ? [] : points]
             return Reading.decode(try! JSONSerialization.data(withJSONObject: object), now: now)!
         }
@@ -23,7 +27,7 @@ import AppKit
         }
         let sheet = VStack(alignment: .leading, spacing: 18) {
             Text("Fan Control · Offline layout review").font(.title2.weight(.semibold))
-            Text("Fixture data · system Gallery and desktop validation pending").font(.caption).foregroundStyle(.secondary)
+            Text("Fixture data · system desktop tests waived for this release").font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 18) { tile(one, family: .systemSmall, scheme: .light); tile(two, family: .systemSmall, scheme: .light); tile(two, family: .systemMedium, scheme: .light) }
             HStack(spacing: 18) { tile(one, family: .systemSmall, scheme: .dark); tile(two, family: .systemSmall, scheme: .dark); tile(two, family: .systemMedium, scheme: .dark) }
             HStack(spacing: 18) { tile(stopped, family: .systemSmall, scheme: .light); tile(missing, family: .systemSmall, scheme: .light); tile(one, family: .systemMedium, scheme: .light) }

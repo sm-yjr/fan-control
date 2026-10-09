@@ -16,3 +16,9 @@
 "Collecting history" = "Collecting history";
 "CPU temperature history, past hour" = "CPU temperature history, past hour";
 "Temperature and measured fan speeds. Open Fan Control to collect readings; refresh is managed by macOS." = "Temperature and measured fan speeds. Open Fan Control to collect readings; refresh is managed by macOS.";
+"Past 10 minutes" = "Past 10 minutes";
+"CPU temperature history, past 10 minutes" = "CPU temperature history, past 10 minutes";
+"Outdated" = "Outdated";
+"Stopped" = "Stopped";
+"Paused" = "Paused";
+"ago" = "ago";
