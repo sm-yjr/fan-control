@@ -531,11 +531,7 @@ impl Controller {
                     {
                         state.adaptive_last_demand_at = Some(now);
                     }
-                    let low_demand = speed <= ADAPTIVE_RELEASE_DEMAND_PERCENT
-                        && adaptive.demand_percent <= ADAPTIVE_RELEASE_DEMAND_PERCENT
-                        && !adaptive.load_sustained
-                        && adaptive.silicon_rise_celsius_per_second <= 0.15
-                        && adaptive.comfort_demand_percent <= 0.0;
+                    let low_demand = adaptive.low_demand_for_release(speed);
                     if low_demand {
                         state.adaptive_low_demand_since.get_or_insert(now);
                     } else {

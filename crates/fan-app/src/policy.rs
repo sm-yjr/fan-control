@@ -25,6 +25,9 @@ pub struct PolicyEditor {
     preference: Retained<NSSlider>,
     preference_value: Retained<NSTextField>,
     preference_reset: Retained<NSButton>,
+    preference_card: Retained<crate::popover::TintedView>,
+    preference_endpoints: Retained<NSStackView>,
+    preference_selection: Retained<NSStackView>,
     enabled: Retained<NSSwitch>,
     target: Retained<NSTextField>,
     source: Retained<NSPopUpButton>,
@@ -151,17 +154,28 @@ impl PolicyEditor {
         preference.setAllowsTickMarkValuesOnly(true);
         preference
             .widthAnchor()
-            .constraintEqualToConstant(CONTENT - 24.)
+            .constraintEqualToConstant(crate::form::ROW)
             .setActive(true);
         preference.setAccessibilityLabel(Some(&text("散热偏好")));
         preference.setAccessibilityHelp(Some(&text(
             "21 档散热偏好，左侧更安静，右侧更凉快，默认在中间。保存后仅影响智能散热。",
         )));
-        let preference_value = styled_label(mtm, "默认", tokens::BODY, true, false, None);
+        let preference_value = styled_label(
+            mtm,
+            "当前选择：默认",
+            tokens::BODY,
+            true,
+            false,
+            Some(crate::form::ROW),
+        );
         let preference_reset = button(mtm, delegate, "恢复默认", sel!(resetCoolingPreference:));
         let preference_group = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 8.);
         preference_group.addArrangedSubview(&preference);
         let labels = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
+        labels
+            .widthAnchor()
+            .constraintEqualToConstant(crate::form::ROW)
+            .setActive(true);
         labels.addArrangedSubview(&styled_label(
             mtm,
             "更安静",
@@ -170,8 +184,6 @@ impl PolicyEditor {
             true,
             None,
         ));
-        labels.addArrangedSubview(&spacer(mtm));
-        labels.addArrangedSubview(&preference_value);
         labels.addArrangedSubview(&spacer(mtm));
         labels.addArrangedSubview(&styled_label(
             mtm,
@@ -182,8 +194,11 @@ impl PolicyEditor {
             None,
         ));
         preference_group.addArrangedSubview(&labels);
-        preference_group.addArrangedSubview(&preference_reset);
-        view.addArrangedSubview(&group(mtm, &[&preference_group]));
+        let selection = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 8.);
+        selection.addArrangedSubview(&preference_value);
+        selection.addArrangedSubview(&preference_reset);
+        let preference_card = group(mtm, &[&preference_group, &selection]);
+        view.addArrangedSubview(&preference_card);
         view.addArrangedSubview(&caption(mtm, "无需校准。更安静会适度降低日常散热，更凉快会加强散热；高温保护始终优先。内部温度不代表机壳表面实测温度。保存偏好不会切换风扇模式。", CONTENT));
 
         // Optional comfort target, only active after a two-point calibration.
@@ -347,6 +362,9 @@ impl PolicyEditor {
             preference,
             preference_value,
             preference_reset,
+            preference_card,
+            preference_endpoints: labels,
+            preference_selection: selection,
             enabled,
             target,
             source,
@@ -468,8 +486,9 @@ impl PolicyEditor {
         };
         self.status.setTextColor(Some(&status_color));
         self.use_smart.setHidden(smart.in_use);
-        self.use_smart
-            .setEnabled(state.helper_ready && !state.installing && fresh);
+        self.use_smart.setEnabled(
+            state.helper_ready && !state.installing && !state.handback_pending && fresh,
+        );
         let comfort = match (
             self.enabled.state() == NSControlStateValueOn,
             reading.estimated_surface_celsius.filter(|_| fresh),
@@ -504,7 +523,11 @@ impl PolicyEditor {
                 bias.abs()
             )
         };
-        self.preference_value.setStringValue(&raw_text(&label));
+        self.preference_value.setStringValue(&raw_text(&format!(
+            "{}{}",
+            crate::i18n::translate("当前选择："),
+            label,
+        )));
         self.preference_reset.setEnabled(bias != 0);
     }
     pub fn reset_preference(&self) {
@@ -535,6 +558,8 @@ impl PolicyEditor {
             self.preference.setDoubleValue(f64::from(bias));
             self.preference_changed();
             assert_eq!(self.tuning().bias, bias);
+            assert_eq!(self.preference_reset.isEnabled(), bias != 0);
+            self.verify_preference_layout();
         }
         self.reset_preference();
         assert_eq!(self.tuning().bias, 0);
@@ -542,6 +567,47 @@ impl PolicyEditor {
         self.preference.setDoubleValue(original);
         self.preference_changed();
     }
+    fn verify_preference_layout(&self) {
+        self.view.layoutSubtreeIfNeeded();
+        let card: &NSView = &self.preference_card;
+        let endpoints = self
+            .preference_endpoints
+            .convertRect_toView(self.preference_endpoints.bounds(), Some(card));
+        let selection = self
+            .preference_selection
+            .convertRect_toView(self.preference_selection.bounds(), Some(card));
+        let value = self
+            .preference_value
+            .convertRect_toView(self.preference_value.bounds(), Some(card));
+        let slider = self
+            .preference
+            .convertRect_toView(self.preference.bounds(), Some(card));
+        let separate = |a: objc2_foundation::NSRect, b: objc2_foundation::NSRect| {
+            a.origin.y + a.size.height <= b.origin.y || b.origin.y + b.size.height <= a.origin.y
+        };
+        assert!(
+            separate(endpoints, selection),
+            "selection must be outside the endpoint row"
+        );
+        assert!(
+            separate(slider, value),
+            "selection must be outside the slider axis"
+        );
+        assert_eq!(self.preference_endpoints.arrangedSubviews().len(), 3);
+        assert!(self
+            .preference_value
+            .stringValue()
+            .to_string()
+            .starts_with(&crate::i18n::translate("当前选择：")));
+        for frame in [endpoints, selection, value, slider] {
+            assert!(frame.size.width > 0. && frame.size.height > 0.);
+            assert!(
+                frame.origin.x >= 0.
+                    && frame.origin.x + frame.size.width <= card.bounds().size.width + 0.5
+            );
+        }
+    }
+
     pub fn record(&self, index: usize, state: &UiSnapshot) -> Result<(), String> {
         if index >= 2 {
             return Err("校准点无效。".into());

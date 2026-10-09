@@ -236,6 +236,8 @@ define_class!(
                     ui.open_editor(self,None,false);ui.open_policy(self);ui.open_preferences(self);
                     ui.tabs.setSelectedTabViewItemIndex(3);
                     ui.details.verify_native_list(&ui.window);
+                    ui.tabs.setSelectedTabViewItemIndex(TAB_SMART);
+                    ui.window.displayIfNeeded();
                     ui.verify_policy_flow(self);
                     smoke_done=true;
                 }
