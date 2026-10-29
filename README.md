@@ -137,7 +137,7 @@ Sparkle 仍固定为 2.9.2，下载源和 SHA-256 在 `script/package_app.sh` �
 https://github.com/sm-yjr/fan-control/releases/latest/download/appcast.xml
 ```
 
-正式发布只通过 `.github/workflows/release.yml`，由 `vMAJOR.MINOR.PATCH` 标签触发。工作流执行 Rust 检查、arm64 打包、Developer ID 签名、App 与 DMG 公证/装订、Gatekeeper 验证及 Sparkle Ed25519 appcast，再创建 GitHub Release。发布前需要确认 main CI、验收清单和以下六个 Actions Secrets；不能在日志、提交或终端输出 Secret 值：
+正式发布只通过 `.github/workflows/release.yml`，通常由 `vMAJOR.MINOR.PATCH` 标签触发。工作流执行 Rust 检查、arm64 打包、Developer ID 签名、App 与 DMG 公证/装订、Gatekeeper 验证及 Sparkle Ed25519 appcast，再创建 GitHub Release。发布前需要确认 main CI、验收清单和以下六个 Actions Secrets；不能在日志、提交或终端输出 Secret 值：
 
 ```text
 MACOS_CERTIFICATE_P12_BASE64
@@ -163,6 +163,8 @@ hdiutil verify dist/FanControl-0.3.1.dmg
 本地 ad-hoc 签名和 DMG 校验不能证明网络下载后的 Gatekeeper 接受或正式更新安装已经通过；正式候选包必须重新完成这些验收。
 
 ## 许可证
+
+本地预构建发布适用于明确授权的发布：在本机完成 release 构建和 Developer ID 签名，将 `FanControl.app` 压缩为 `FanControl-VERSION-prebuilt.zip`，上传到目标版本的草稿 Release。草稿的 `targetCommitish` 必须是构建源码的完整提交 SHA。随后手动触发 `release.yml`，填写 `release_tag`、`source_sha`、`ci_run_id` 和上传 ZIP 的 `candidate_sha256`。工作流核对同一源码树的完整成功 CI、候选哈希、版本、架构、签名和独立 helper，再使用 GitHub Secrets 公证 App/DMG、生成 Sparkle 签名并发布草稿；不会重新编译，也不会导出密钥。预构建 ZIP 在正式发布后移除。不要同时推送同名标签触发普通构建路线。
 
 Fan Control 采用 [GNU General Public License v3.0 only](LICENSE)。Sparkle 与 Rust 依赖的许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

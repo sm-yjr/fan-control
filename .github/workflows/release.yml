@@ -4,12 +4,27 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Draft release tag (vMAJOR.MINOR.PATCH)"
+        required: true
+      source_sha:
+        description: "Full source commit of the locally signed app"
+        required: true
+      ci_run_id:
+        description: "Successful CI run with the same source tree"
+        required: true
+      candidate_sha256:
+        description: "SHA-256 of the uploaded prebuilt ZIP"
+        required: true
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: macos-15
     env:
       NOTARY_PROFILE: fan-control-notary
@@ -231,3 +246,31 @@ jobs:
             "$APPCAST_PATH" \
             --generate-notes \
             --title "Fan Control ${GITHUB_REF_NAME#v}"
+
+  prebuilt:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out publishing tools
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify, notarize and publish local candidate
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VALIDATED_CI_RUN: ${{ inputs.ci_run_id }}
+          CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./script/publish_prebuilt.sh
