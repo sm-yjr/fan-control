@@ -5,6 +5,7 @@ extern "C" fn terminate_signal(_: libc::c_int) {
 }
 mod app_version;
 mod chart;
+mod control_trace;
 mod dashboard;
 mod dashboard_render;
 mod details;

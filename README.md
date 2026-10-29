@@ -56,7 +56,9 @@ rustup component add rustfmt clippy
 /Library/LaunchDaemons/com.local.fan-control.helper.plist
 ```
 
-Rust helper 使用协议版本 8，通过同一 socket 连接协商版本，并在锁后重新验证当前用户与 peer；控制租约限定 GUI 失联后的控制期限。新 socket 位于 root 持有且无额外写权限的 `/Library/PrivilegedHelperTools/com.local.fan-control.runtime/helper.sock`。旧 socket 仅允许只读状态诊断。旧协议 helper 必须通过正常管理员授权流程更新；应用不得向不兼容 helper 发送控制请求。租约用于在 GUI 失联或异常退出后把风扇交还系统，不能替代硬件转速边界、console-user 校验和实际 SMC 状态读取。安装是否成功以服务 readiness 和协议一致为准，不能仅凭文件已复制判定。
+Rust helper 使用协议版本 9，通过同一 socket 连接协商版本，并在锁后重新验证当前用户与 peer；控制租约限定 GUI 失联后的控制期限。协议 9 在确认交还系统后保留固件的目标寄存器，不再写零覆盖系统决策。新 socket 位于 root 持有且无额外写权限的 `/Library/PrivilegedHelperTools/com.local.fan-control.runtime/helper.sock`。旧 socket 仅允许只读状态诊断。旧协议 helper 必须通过正常管理员授权流程更新；应用不得向不兼容 helper 发送控制请求。租约用于在 GUI 失联或异常退出后把风扇交还系统，不能替代硬件转速边界、console-user 校验和实际 SMC 状态读取。安装是否成功以服务 readiness 和协议一致为准，不能仅凭文件已复制判定。
+
+智能散热发现硬件已回到系统自动模式时，从本轮实测 RPM 重新渐变接管；普通接管不直接恢复旧的高目标，紧急保护与系统散热下界仍立即生效。正常低负荷交还同时检查确认目标和实测 RPM 已降到硬件最低转速附近。唤醒后保留多个时点的硬件重查，定时重查不清空已恢复的热历史和控制状态。系统自动模式仍可能按固件策略停转，再次接管至少达到硬件最低连续转速。诊断导出包含最多 256 条带时间戳的控制历史，记录模式变化、启停、采样间隔、请求/确认目标及失败；普通稳定运行每 30 秒记录一次。helper 日志另记租约交还原因与租约年龄，便于区分低负荷交还、心跳超时和进程退出。
 
 用户配置继续保存在 `~/.config/fan-control/config.json`。迁移必须保留旧 Swift 配置中的模式、曲线、UUID 与自定义控制点；只有完全匹配旧默认值的曲线才可以升级默认策略。损坏配置和持久化失败需要可见反馈。具体兼容性与故障恢复验收见验收清单。
 

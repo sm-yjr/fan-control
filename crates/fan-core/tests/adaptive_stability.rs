@@ -407,6 +407,73 @@ fn automatic_reconciliation_preserves_live_system_rpm_then_resumes_normal_slew()
     assert_normal_slew(previous, simulation.applied_rpm().unwrap(), SAMPLE_SECONDS);
 }
 
+#[test]
+fn unexpected_system_handback_restarts_from_live_rpm_not_the_old_target() {
+    let mut simulation = Simulation::new();
+    warm_under_load(&mut simulation, 600);
+    assert!(simulation.applied_rpm().unwrap() > MINIMUM_RPM + 1500);
+    // Firmware or a lease watchdog can hand back without a controller ACK.
+    simulation.snapshot.fans[0].mode = HardwareMode::Automatic;
+    simulation.snapshot.fans[0].current_rpm = Some(0.0);
+    let takeover = simulation.step();
+    assert_eq!(requested_rpm(&takeover), Some(MINIMUM_RPM));
+    let next = simulation.step();
+    assert_normal_slew(MINIMUM_RPM, requested_rpm(&next).unwrap(), SAMPLE_SECONDS);
+}
+
+#[test]
+fn late_wake_rechecks_preserve_established_cooling_and_pending_acknowledgements() {
+    let mut simulation = Simulation::new();
+    warm_under_load(&mut simulation, 600);
+    let initial = simulation.applied_rpm().unwrap();
+    simulation.temperature("cpu", Some(45.0));
+    simulation.temperature("body", Some(30.0));
+    simulation.snapshot.cpu_utilization_percent = Some(0.0);
+    for _ in 0..30 {
+        simulation.controller.recheck_hardware();
+        let previous = simulation.applied_rpm().unwrap();
+        let actions = simulation.poll(simulation.now + SAMPLE_SECONDS);
+        assert!(!returns_to_system(&actions));
+        assert!(simulation.reading().heat_soak_percent > 0.0);
+        // A scheduled recheck must not invalidate an action already in flight.
+        simulation.controller.recheck_hardware();
+        simulation.accept(&actions);
+        assert_normal_slew(previous, simulation.applied_rpm().unwrap(), SAMPLE_SECONDS);
+    }
+    assert!(simulation.applied_rpm().unwrap() < initial);
+    assert!(simulation.applied_rpm().unwrap() >= initial - 2100);
+}
+
+#[test]
+fn unexpected_system_handback_does_not_delay_emergency_cooling() {
+    let mut simulation = Simulation::new();
+    warm_under_load(&mut simulation, 600);
+    simulation.snapshot.fans[0].mode = HardwareMode::Automatic;
+    simulation.snapshot.fans[0].current_rpm = Some(0.0);
+    simulation.snapshot.thermal_pressure = ThermalPressure::Critical;
+    let takeover = simulation.step();
+    assert_eq!(requested_rpm(&takeover), Some(MAXIMUM_RPM));
+    assert_eq!(takeover[0].reason, ActionReason::Emergency);
+}
+
+#[test]
+fn low_demand_waits_for_measured_fan_to_finish_decelerating() {
+    let mut simulation = Simulation::new();
+    warm_under_load(&mut simulation, 600);
+    simulation.temperature("cpu", Some(45.0));
+    simulation.temperature("body", Some(30.0));
+    simulation.snapshot.cpu_utilization_percent = Some(0.0);
+    // A target ACK does not prove that the physical rotor has slowed down.
+    for _ in 0..900 {
+        simulation.snapshot.fans[0].current_rpm = Some(3000.0);
+        let actions = simulation.step();
+        assert!(!returns_to_system(&actions));
+    }
+    assert!(simulation.applied_rpm().unwrap() <= MINIMUM_RPM + 75);
+    simulation.snapshot.fans[0].current_rpm = Some(MINIMUM_RPM as f64);
+    assert!(returns_to_system(&simulation.step()));
+}
+
 fn calibrated_config() -> Config {
     Config {
         fans: vec![FanConfig::adaptive(0)],

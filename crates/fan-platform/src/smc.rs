@@ -370,20 +370,10 @@ impl Smc {
             return Err(Error("fan remained forced".into()));
         }
         self.forced.remove(&id);
-        // System mode already owns its target and may reject writes. Preserve it.
-        if initial_mode == 3 {
-            return self.release_test_if_all_automatic();
-        }
-        // A failed target clear must never undo the verified automatic hand-back.
-        let target_key = format!("F{id}Tg");
-        if let Ok(mut target) = self.transport.read(&target_key) {
-            if let Err(error) = target
-                .set_rpm(0)
-                .and_then(|()| self.write_verified(&target_key, &target, 10))
-            {
-                eprintln!("[FanControlHelper] fan {id} is verified automatic; optional target cleanup failed: {error}");
-            }
-        }
+        // Both automatic encodings (0 and 3) give target ownership to firmware.
+        // Writing zero here can interrupt its cooling decision, leaves an unsafe
+        // target for a later unlock, and races firmware's own target updates.
+        // Verified mode hand-back is sufficient; never clear F*Tg afterwards.
         self.release_test_if_all_automatic()
     }
     fn release_test_if_all_automatic(&mut self) -> Result<()> {
@@ -1273,7 +1263,7 @@ mod tests {
         state.lock().unwrap().cancel_on_write = Some(("F0Tg".into(), token));
         assert!(smc.set_fan_rpm(0, 2500).is_err());
         assert_eq!(smc.read_mode(0).unwrap(), FanMode::Automatic);
-        assert_eq!(smc.read_value("F0Tg").unwrap(), 0.0);
+        assert_eq!(smc.read_value("F0Tg").unwrap(), 2500.0);
     }
     #[test]
     fn reset_attests_final_mode_after_global_unlock_cleanup() {
@@ -1303,6 +1293,33 @@ mod tests {
         assert_eq!(snapshot.fans[0].mode, FanMode::Automatic);
         assert!(smc.set_fan_mode(0, FanMode::Automatic).is_ok());
         assert!(state.lock().unwrap().writes.is_empty());
+    }
+
+    #[test]
+    fn automatic_handback_preserves_firmware_target_in_all_mode_encodings() {
+        for mode in [0, 1, 3] {
+            let (mut smc, state) = setup();
+            state
+                .lock()
+                .unwrap()
+                .keys
+                .insert("F0md".into(), value("ui8 ", &[mode]));
+            smc.set_fan_mode(0, FanMode::Automatic).unwrap();
+            assert_eq!(smc.read_mode(0).unwrap(), FanMode::Automatic);
+            assert_eq!(smc.read_value("F0Tg").unwrap(), 2000.0);
+            assert!(state.lock().unwrap().writes.iter().all(|key| key != "F0Tg"));
+        }
+    }
+
+    #[test]
+    fn watchdog_reset_never_overwrites_system_fan_targets() {
+        let (mut smc, state) = setup();
+        smc.set_fan_rpm(0, 2500).unwrap();
+        state.lock().unwrap().writes.clear();
+        smc.reset_all().unwrap();
+        assert_eq!(smc.read_mode(0).unwrap(), FanMode::Automatic);
+        assert_eq!(smc.read_value("F0Tg").unwrap(), 2500.0);
+        assert!(state.lock().unwrap().writes.iter().all(|key| key != "F0Tg"));
     }
     #[test]
     fn corrupt_live_count_still_hands_previously_verified_fans_back() {

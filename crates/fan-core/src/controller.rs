@@ -553,7 +553,10 @@ impl Controller {
                     let at_idle_speed = state
                         .status
                         .applied_rpm
-                        .is_some_and(|rpm| rpm <= minimum.saturating_add(75));
+                        .is_some_and(|rpm| rpm <= minimum.saturating_add(75))
+                        && fan
+                            .current_rpm
+                            .is_some_and(|rpm| rpm <= f64::from(minimum.saturating_add(75)));
                     let remain_with_system = !cooling_active
                         && speed < ADAPTIVE_START_DEMAND_PERCENT
                         && adaptive.comfort_demand_percent <= 0.0;
@@ -768,10 +771,20 @@ impl Controller {
             } else {
                 state.mismatch_started_at = None;
             }
-            let previous = state
-                .status
-                .applied_rpm
-                .unwrap_or(fan.current_rpm.unwrap_or(0.0) as u32);
+            // A firmware/watchdog hand-back can happen without an ACK here.
+            // Once the hardware is automatic, the old custom target no longer
+            // describes its cooling: restart the ordinary ramp from the tachometer.
+            // The validated hardware minimum and emergency/system floors still apply.
+            let previous = if matches!(config.mode, ControlMode::Adaptive)
+                && fan.mode == HardwareMode::Automatic
+            {
+                fan.current_rpm.unwrap_or(0.0) as u32
+            } else {
+                state
+                    .status
+                    .applied_rpm
+                    .unwrap_or(fan.current_rpm.unwrap_or(0.0) as u32)
+            };
             let protected_decrease =
                 desired < previous && (state.status.safety_override || state.safety_release_active);
             if state.status.safety_override {
@@ -955,7 +968,7 @@ impl Controller {
         actions
     }
 
-    /// 宿主应在唤醒的多个恢复时点调用；每次都重读真实硬件模式后再 update。
+    /// 真实唤醒或安全回退后的会话重置；后续恢复时点用 recheck_hardware 保留热历史。
     pub fn resume(&mut self) {
         self.suspended = false;
         self.estimator.reset();
@@ -968,6 +981,16 @@ impl Controller {
                 generation,
                 ..Runtime::default()
             };
+        }
+    }
+
+    /// Late wake retries re-read hardware without erasing heat or acknowledged targets.
+    /// A complete resume/reset is reserved for the actual lifecycle transition.
+    pub fn recheck_hardware(&mut self) {
+        for state in self.runtime.values_mut() {
+            state.dirty = true;
+            state.last_mode_reconcile_at = None;
+            state.last_rpm_reconcile_at = None;
         }
     }
 }
