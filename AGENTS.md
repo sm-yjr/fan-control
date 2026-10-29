@@ -36,7 +36,13 @@ test_rust.sh 执行 rustfmt、Clippy 与 workspace tests，实际覆盖范围以
 
 ## 发布
 
-发布只通过 .github/workflows/release.yml：vMAJOR.MINOR.PATCH 标签触发 arm64 构建、Developer ID 签名、Apple 公证、Sparkle Ed25519 appcast 和 GitHub Release。script/sign_app.sh 必须按 Installer、Downloader、Autoupdate、Updater、Framework、Helper、App 的顺序由内到外签名，不能改回 codesign --deep。先确认 main CI、产品验收与六个 Actions Secrets，再在已有发布授权范围内推送标签；不要在日志、提交或终端输出 Secret 值。实现和本地打包请求不自动授权发布。
+后续正式发布统一采用“本地编译并上传候选包，Actions 只做校验、公证、生成更新签名和发布”的预构建路线。唯一发布入口仍是 .github/workflows/release.yml，通过 workflow_dispatch 调用；不得默认推送 vMAJOR.MINOR.PATCH 标签去触发远端重复编译。旧标签构建入口仅保留历史兼容，除非用户明确改变发布方式，否则不使用。
+
+GitHub 管理的六项发布 Secrets 留在 GitHub，仅由 Actions 使用；不得尝试导出到本地，不得索要其明文，不在日志、提交或终端输出 Secret 值。本地候选签名使用已安装的 Developer ID 身份，不能从 GitHub 导出证书私钥来补齐本地环境，也不要求在本地配置 Apple 公证账户或 Sparkle 私钥。script/sign_app.sh 必须保留 Installer、Downloader、Autoupdate、Updater、Framework、Helper、App 的由内到外签名顺序，不能改回 codesign --deep。
+
+发布前确认候选源码具有完整成功 CI 和对应产品验收记录；合并导致提交 SHA 改变时，CI 与候选的 Git 源码树必须完全一致。本地 release 构建完成后，将已签名的 arm64 FanControl.app 压缩为 FanControl-VERSION-prebuilt.zip，记录 SHA-256，上传到 targetCommitish 为完整源码 SHA 的草稿 Release。调用 release.yml 时提供 release_tag、source_sha、ci_run_id、candidate_sha256；Actions 校验来源和候选后完成 App/DMG 公证、Sparkle 签名及发布，不重新编译。不要预先推送同名标签；发布草稿时由 GitHub 创建标签。正常 CI 继续负责源码验证。
+
+发布后必须重新下载公开 DMG/appcast，核验版本、架构、签名、公证票据、哈希和更新签名，不把任务成功或本地打包当作公开产物验证。实现和本地打包请求不自动授权对外发布。
 
 ## 深入文档
 

@@ -159,11 +159,13 @@ SMC、helper安装与睡眠实现本次未修改，协议仍为8，不要求已�
 
 ## 正式分发与更新
 
+后续统一采用本地预构建发布：本地完成 release 编译和 Developer ID 候选签名，上传带 SHA-256 的 ZIP 到绑定完整源码 SHA 的草稿 Release，再通过 `release.yml` 的 `workflow_dispatch` 触发校验、公证、更新签名和发布。GitHub 发布 Secrets 不导出到本地，Actions 不重复编译候选；具体输入和步骤以 [README 固定发布流程](../README.md#固定发布流程) 为准。不得预先推送同名标签进入旧构建路线。
+
 2026-10-05 只读核对：基线 main 的 [CI #32550390628](https://github.com/sm-yjr/fan-control/actions/runs/32550390628) 已成功，head 为 `ff3327e5f62a7ceb37b3fd28abd12017877181a1`；六个所需仓库 Secrets 名称均存在。仅确认存在，未读取 Secret 值，也未验证凭据有效性。当前 Rust 工作区尚未推送，旧 main 的成功不能证明本候选 CI 通过。CI 已补入 macOS 14/15 的中英文隔离窗口初始化与独立 Rust 1.85.1 job，本地 YAML/所有 run 段 shell 语法检查通过，远端执行仍待授权后的提交与 CI。
 
-以下项目均 **尚未进行 Developer ID 公证或实际更新安装验收**。本地 ad-hoc 签名只用于开发。
+以下为每次发布必须分别记录的检查项；历史版本的验证不能自动覆盖新候选。本地 ad-hoc 签名只用于开发。
 
-- main CI 通过；确认六个 Actions Secrets 存在，禁止输出值。候选 tag/version/build 一致，发布仍需明确授权。
+- 候选源码的完整 CI 通过；合并改写 SHA 时，CI 与候选的源码树必须完全一致。确认六个 Actions Secrets 存在，禁止导出或输出值；草稿 targetCommitish、source_sha、候选 ZIP SHA-256、tag/version/build 一致，发布仍需明确授权。
 - Installer、Downloader、Autoupdate、Updater、Framework、Helper、App 从内到外签名，正式包保留 Hardened Runtime；严格验证 App 和独立 helper。
 - App 和最终 DMG 分别公证、装订；下载后的 quarantine/Gatekeeper 接受，DMG 可挂载和复制，首次打开可正常进入权限流程。
 - appcast 含正确版本、最低系统、下载 URL、大小与 Ed25519 签名；使用实际旧版到候选新版完成检查、下载、替换和重启。

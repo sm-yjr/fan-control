@@ -137,7 +137,9 @@ Sparkle 仍固定为 2.9.2，下载源和 SHA-256 在 `script/package_app.sh` �
 https://github.com/sm-yjr/fan-control/releases/latest/download/appcast.xml
 ```
 
-正式发布只通过 `.github/workflows/release.yml`，通常由 `vMAJOR.MINOR.PATCH` 标签触发。工作流执行 Rust 检查、arm64 打包、Developer ID 签名、App 与 DMG 公证/装订、Gatekeeper 验证及 Sparkle Ed25519 appcast，再创建 GitHub Release。发布前需要确认 main CI、验收清单和以下六个 Actions Secrets；不能在日志、提交或终端输出 Secret 值：
+后续正式发布统一采用 **本地编译并上传候选包，Actions 只做校验、公证、生成更新签名和发布** 的方式，省去发布阶段的远端重复编译。唯一入口仍是 `.github/workflows/release.yml`，使用 `workflow_dispatch` 触发预构建发布。
+
+以下六项发布 Secrets 保留在 GitHub，只由 Actions 使用，不导出到本地、不索要明文、不写入日志或提交。本地使用已安装的 Developer ID 身份签名候选，无需在本地配置 Apple 公证账户或 Sparkle 私钥：
 
 ```text
 MACOS_CERTIFICATE_P12_BASE64
@@ -150,21 +152,34 @@ SPARKLE_PRIVATE_KEY
 
 `sign_app.sh` 保留 Installer、Downloader、Autoupdate、Updater、Framework、Helper、App 的由内到外签名顺序。正式 Developer ID 构建启用 Hardened Runtime；本地 ad-hoc 构建采用现有开发签名策略。`codesign --verify --deep --strict` 用于验证，不能把签名过程改成 `codesign --deep`。
 
-DMG 的本地构建检查不需要 Apple 公证账户：
+以下 DMG 命令仅用于本地包装检查，不需要 Apple 公证账户。正式 DMG 由 Actions 在 App 公证后生成：
 
 ```bash
 ./script/package_dmg.sh \
   dist/FanControl.app \
-  dist/FanControl-0.3.1.dmg \
-  "Fan Control 0.3.1"
-hdiutil verify dist/FanControl-0.3.1.dmg
+  dist/FanControl-local-check.dmg \
+  "Fan Control 本地检查"
+hdiutil verify dist/FanControl-local-check.dmg
 ```
 
 本地 ad-hoc 签名和 DMG 校验不能证明网络下载后的 Gatekeeper 接受或正式更新安装已经通过；正式候选包必须重新完成这些验收。
 
-### 本地预构建发布
+### 固定发布流程
 
-本地预构建发布适用于明确授权的发布：在本机完成 release 构建和 Developer ID 签名，将 `FanControl.app` 压缩为 `FanControl-VERSION-prebuilt.zip`，上传到目标版本的草稿 Release。草稿的 `targetCommitish` 必须是构建源码的完整提交 SHA。随后手动触发 `release.yml`，填写 `release_tag`、`source_sha`、`ci_run_id` 和上传 ZIP 的 `candidate_sha256`。工作流核对同一源码树的完整成功 CI、候选哈希、版本、架构、签名和独立 helper，再使用 GitHub Secrets 公证 App/DMG、生成 Sparkle 签名并发布草稿；不会重新编译，也不会导出密钥。预构建 ZIP 在正式发布后移除。不要同时推送同名标签触发普通构建路线。
+1. 在明确的发布授权范围内确定版本、构建号、完整源码提交 SHA 和产品验收范围。确认候选源码的完整 CI 成功；若提交经过合并，CI 提交与候选提交的 Git 源码树必须完全一致。构建号须高于最新正式版。
+2. 在本机用 `BUILD_CONFIGURATION=release`、明确的 `APP_VERSION` / `BUILD_NUMBER` 和已有 Developer ID 身份执行 `script/package_app.sh`，验证 arm64 App、独立 helper、签名和 Sparkle 运行时。这里不使用 Apple 公证凭据或 Sparkle 私钥。
+3. 将签名后的 `FanControl.app` 压缩为 `FanControl-VERSION-prebuilt.zip`，计算 SHA-256，上传到该版本的草稿 Release。草稿的 `targetCommitish` 必须是构建源码的完整 SHA；上传 ZIP 后不得更改其字节。
+4. 手动触发 `release.yml`，提供下表四个输入。Actions 运行 `script/publish_prebuilt.sh`，先核对 CI、源码树、草稿、ZIP 哈希、版本、架构、签名和独立 helper，再使用 GitHub Secrets 公证 App、生成并公证 DMG、生成 Sparkle 更新签名，最后发布草稿并移除预构建 ZIP。此任务不执行 Rust 或 Widget 编译。
+5. 重新下载公开 DMG 与 appcast，核验哈希、版本、架构、Developer ID 签名、公证票据、Gatekeeper、更新签名，以及 latest 更新源与版本化更新源的一致性。任务成功本身不代替这些检查，也不代替真实客户端更新验收。
+
+| workflow_dispatch 输入 | 内容 |
+| --- | --- |
+| `release_tag` | 新版本标签，例如 `vMAJOR.MINOR.PATCH` |
+| `source_sha` | 本地候选对应的完整 Git 提交 SHA，与草稿 `targetCommitish` 相同 |
+| `ci_run_id` | 同一源码树的完整成功 CI 运行 ID |
+| `candidate_sha256` | 上传的预构建 ZIP 的 SHA-256 |
+
+不要预先推送同名标签；草稿发布时由 GitHub 创建标签。旧的标签触发构建入口仅用于历史兼容，后续正常发布不使用，除非用户明确改变发布方式。正常 CI 仍负责源码验证，预构建发布只省去发布阶段的重复编译。
 
 ## 许可证
 
