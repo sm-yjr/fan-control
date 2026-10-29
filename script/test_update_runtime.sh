@@ -33,7 +33,7 @@ PACKAGE_INFO="$OUTPUT_DIR/package-info.plist"
 /usr/bin/plutil -lint "$PACKAGE_INFO"
 [[ "$(/usr/bin/plutil -extract app.version raw "$PACKAGE_INFO")" == "0.0.3" ]]
 [[ "$(/usr/bin/plutil -extract app.build raw "$PACKAGE_INFO")" == "3" ]]
-[[ "$(/usr/bin/plutil -extract helper_protocol raw "$PACKAGE_INFO")" == "8" ]]
+[[ "$(/usr/bin/plutil -extract helper_protocol raw "$PACKAGE_INFO")" == "9" ]]
 [[ "$(/usr/bin/plutil -extract architecture raw "$PACKAGE_INFO")" == "aarch64" ]]
 
 set +e

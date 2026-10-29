@@ -12,7 +12,7 @@ Fan Control 的生产技术栈正在迁移到 Rust，目标仍是 macOS 14+、Ap
 - fan-core 持有硬件无关的模型、曲线、配置与安全策略；fan-platform 持有 Rust SMC/IOKit、Unix socket、helper 和租约；fan-app 使用 AppKit 原生系统控件。重复的背景、边框、圆角、字号和间距先扩展语义令牌。交互保留键盘、VoiceOver、深浅色与 Reduce Motion。
 - FanControl 同一可执行文件兼任 GUI 和 --helper root daemon。helper 被单独复制到 /Library/PrivilegedHelperTools，主程序不得直接链接 Sparkle 或其他仅存在于 .app 内的动态框架；用独立 helper 的 otool -L 验证。
 - Sparkle 仅在 GUI 或专用 updater 诊断模式中运行时加载。固定版本和 SHA-256 位于 script/package_app.sh；升级时同时更新版本、校验值并验证独立 helper。
-- Rust helper 协议版本为 8，新增有界控制租约；协议 7 修复已接受连接继承非阻塞导致的同连接写命令失败，协议 8 让无 Ftst 的机型在直接模式写入后等待固件回读。修改请求格式、命令语义或需要替换已安装 helper 的实现时递增协议版本；安装或替换需要正常管理员授权，应用依靠实际 readiness 和版本一致判断可用状态。
+- Rust helper 协议版本为 9，使用有界控制租约；协议 7 修复已接受连接继承非阻塞导致的同连接写命令失败，协议 8 让无 Ftst 的机型在直接模式写入后等待固件回读，协议 9 在交还系统后保留固件目标、禁止清零 F*Tg。修改请求格式、命令语义或需要替换已安装 helper 的实现时递增协议版本；安装或替换需要正常管理员授权，应用依靠实际 readiness 和版本一致判断可用状态。
 - 租约过期、GUI 失联和 console-user 变化必须安全交还系统。helper 保留 root/console-user peer 校验、请求边界、失败回退和真实 SMC 模式读取；绝不能仅依靠 GUI 的退出回调。
 - 睡眠前必须把风扇交还系统，唤醒后保留多时点重试。SMC 强制模式可能在睡眠中重置，写入转速前读取真实模式，不能只信进程内缓存。
 - 风扇写入属于硬件安全路径。保留硬件 RPM 上下限、所有自定义模式的紧急保护、采样有效性与过期策略；不要用未经限定的 RPM 或传感器值做实机测试。自动化测试默认使用模拟硬件。

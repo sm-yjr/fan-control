@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="${1:?usage: build_widget.sh <app bundle>}"
-APP_VERSION="${APP_VERSION:-0.5.1}"
+APP_VERSION="${APP_VERSION:-0.5.2}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SDK="$(xcrun --show-sdk-path)"
 CACHE="$ROOT_DIR/.build/widget-module-cache"

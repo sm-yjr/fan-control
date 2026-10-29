@@ -642,6 +642,7 @@ fn run(
     let mut wake_started: Option<Instant> = None;
     let mut wake_retries = 0;
     let mut statuses = BTreeMap::new();
+    let mut trace = crate::control_trace::ControlTrace::default();
     let mut battery = None;
     let power_sender = sender.clone();
     let _power = if demo {
@@ -824,7 +825,7 @@ fn run(
             }
             Ok(WorkerCommand::Export(path)) => {
                 let report_config = diagnostic_config(controller.config());
-                let report = serde_json::json!({"app_version":crate::app_version::current(),"helper_protocol":PROTOCOL_VERSION,"demo":demo,"helper_ready":ready,"snapshot":snapshot,"config":report_config,"thermal":controller.thermal_reading(),"fan_status":statuses,"fan_control":diagnostic_fan_controls(&controller),"configuration_notice":persistence.notice(),"safety_active":handback.active,"safety_failure":handback.failure,"takeover_hold_secs":handback.hold_remaining(Instant::now()).map(|remaining|remaining.as_secs_f64()),"sample_age_secs":(origin.elapsed().as_secs_f64()-snapshot.sampled_at).max(0.)});
+                let report = serde_json::json!({"app_version":crate::app_version::current(),"helper_protocol":PROTOCOL_VERSION,"demo":demo,"helper_ready":ready,"snapshot":snapshot,"config":report_config,"thermal":controller.thermal_reading(),"fan_status":statuses,"fan_control":diagnostic_fan_controls(&controller),"control_history":trace.events(),"configuration_notice":persistence.notice(),"safety_active":handback.active,"safety_failure":handback.failure,"takeover_hold_secs":handback.hold_remaining(Instant::now()).map(|remaining|remaining.as_secs_f64()),"sample_age_secs":(origin.elapsed().as_secs_f64()-snapshot.sampled_at).max(0.)});
                 message = match serde_json::to_vec_pretty(&report)
                     .map_err(|e| e.to_string())
                     .and_then(|bytes| {
@@ -836,6 +837,7 @@ fn run(
             }
             Ok(WorkerCommand::Sleep(reply)) => {
                 crate::telemetry::event("power.sleep.handback");
+                trace.record("power.sleep.handback", serde_json::json!({}));
                 if let Some(widget) = widget.as_mut() {
                     widget.publish(
                         &snapshot,
@@ -866,6 +868,7 @@ fn run(
                 };
             }
             Ok(WorkerCommand::Wake) => {
+                trace.record("power.wake.restore", serde_json::json!({}));
                 crate::telemetry::event("power.wake.restore");
                 if let Some(widget) = widget.as_mut() {
                     widget.publish(
@@ -1011,6 +1014,12 @@ fn run(
             }
             // The core evaluates data even while writes are unavailable, keeping thermal UI current.
             let actions = controller.update(&snapshot, origin.elapsed().as_secs_f64());
+            trace.sample(
+                &snapshot,
+                &controller,
+                origin.elapsed().as_secs_f64(),
+                ready,
+            );
             for action in actions {
                 // A complete reset must be confirmed before any saved custom
                 // intent is resumed. Discard this batch on the first failure.
@@ -1079,6 +1088,7 @@ fn run(
                 } else {
                     false
                 };
+                trace.action(&action, &snapshot, &controller, attempted, ok);
                 controller.acknowledge(&action, ok, origin.elapsed().as_secs_f64());
                 statuses.insert(
                     action.fan_id,
@@ -1128,6 +1138,10 @@ fn run(
             if !demo && ready && handback.heartbeat_allowed() {
                 let response = client.heartbeat();
                 if !response_confirms(&Command::SetAutomatic, &response) {
+                    trace.record(
+                        "control.heartbeat_failed",
+                        serde_json::json!({"message":response.message}),
+                    );
                     ready = false;
                     message = format!("控制服务失联：{}。服务将按租约交还系统。", response.message);
                     if handback.controlled {
@@ -1141,6 +1155,7 @@ fn run(
             next_heartbeat = Instant::now() + Duration::from_secs(2);
         }
         if handback.due(Instant::now()) {
+            let failure = handback.failure.clone();
             let confirmed = if demo {
                 for fan in &mut snapshot.fans {
                     fan.mode = HardwareMode::Automatic;
@@ -1153,6 +1168,10 @@ fn run(
                 handback.acknowledge_reset(&response, Instant::now())
             };
             if confirmed {
+                trace.record(
+                    "control.reset_confirmed",
+                    serde_json::json!({"failure":failure}),
+                );
                 controller.resume();
                 for status in statuses.values_mut() {
                     *status = "已确认交还系统自动".into();
@@ -1171,8 +1190,13 @@ fn run(
         if let Some(wake) = wake_started {
             let delays = [0.5, 2., 8., 20., 60.];
             if wake_retries < delays.len() && wake.elapsed().as_secs_f64() >= delays[wake_retries] {
-                let config = controller.config().clone();
-                controller = Controller::new(config);
+                // Earlier retries may already have restored active cooling. A new
+                // controller here would erase that heat and hand the fans back again.
+                controller.recheck_hardware();
+                trace.record(
+                    "power.wake.recheck",
+                    serde_json::json!({"delay_secs":delays[wake_retries]}),
+                );
                 wake_retries += 1;
                 next_sample = Instant::now();
             }

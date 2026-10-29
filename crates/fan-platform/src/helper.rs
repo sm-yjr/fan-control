@@ -11,9 +11,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 pub const LABEL: &str = "com.local.fan-control.helper";
 pub const RUNTIME_DIRECTORY: &str = "/Library/PrivilegedHelperTools/com.local.fan-control.runtime";
 pub const SOCKET_PATH: &str =
@@ -26,6 +26,14 @@ pub const LOG_PATH: &str = "/Library/Logs/FanControl/helper.log";
 const MAX_FRAME: usize = 4096;
 const LEASE_DURATION: Duration = Duration::from_secs(15);
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+fn log_event(message: &str) {
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    eprintln!("[FanControlHelper] unix_ms={unix_ms} {message}");
+}
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -585,13 +593,15 @@ impl Engine {
         }
     }
     fn expire_lease(&mut self, now: Instant) -> Result<()> {
-        let expired = self.lease.as_ref().is_some_and(|lease| {
-            lease_expired(
+        let state = self.lease.as_ref().map(|lease| {
+            (
                 lease.renewed,
-                now,
                 (self.authorize_peer)(lease.owner),
                 process_alive(lease.owner.pid),
             )
+        });
+        let expired = state.is_some_and(|(renewed, authorized, alive)| {
+            lease_expired(renewed, now, authorized, alive)
         });
         if expired || self.pending_handback {
             // A failed reset retains the expired lease so every watchdog tick retries.
@@ -599,7 +609,24 @@ impl Engine {
             self.smc.reset_all()?;
             self.lease = None;
             self.pending_handback = false;
-            eprintln!("[FanControlHelper] lease expired; returned fans to system control");
+            let (reason, age_ms) = match state {
+                Some((renewed, authorized, alive)) => (
+                    if !authorized {
+                        "peer_no_longer_authorized"
+                    } else if !alive {
+                        "owner_exited"
+                    } else if expired {
+                        "heartbeat_deadline"
+                    } else {
+                        "pending_reset"
+                    },
+                    now.saturating_duration_since(renewed).as_millis(),
+                ),
+                None => ("pending_reset", 0),
+            };
+            log_event(&format!(
+                "lease handback confirmed reason={reason} age_ms={age_ms}"
+            ));
         }
         Ok(())
     }
@@ -743,10 +770,11 @@ pub fn run_helper() -> Result<()> {
                         Ok(()) => {
                             engine.lease = None;
                             engine.pending_handback = false;
+                            log_event("sleep handback confirmed");
                         }
-                        Err(error) => eprintln!(
-                        "[FanControlHelper] sleep handback failed; watchdog will retry: {error}"
-                    ),
+                        Err(error) => log_event(&format!(
+                            "sleep handback failed; watchdog will retry: {error}"
+                        )),
                     }
                 }
                 crate::PowerEvent::WillWake | crate::PowerEvent::DidWake => {
@@ -761,11 +789,11 @@ pub fn run_helper() -> Result<()> {
             std::thread::sleep(Duration::from_millis(500));
             let mut engine = watchdog_engine.lock().unwrap_or_else(|p| p.into_inner());
             if let Err(error) = engine.expire_lease(Instant::now()) {
-                eprintln!("[FanControlHelper] watchdog handback failed: {error}");
+                log_event(&format!("watchdog handback failed: {error}"));
             }
         }
     });
-    eprintln!("[FanControlHelper] ready protocol={PROTOCOL_VERSION}");
+    log_event(&format!("ready protocol={PROTOCOL_VERSION}"));
     let mut accept_error = None;
     while !SHUTDOWN.load(Ordering::SeqCst) {
         match listener.accept() {
