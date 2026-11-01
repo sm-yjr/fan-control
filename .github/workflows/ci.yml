@@ -37,6 +37,9 @@ jobs:
       - name: Verify Widget snapshot contract
         run: ./script/test_widget.sh
 
+      - name: Verify measured Widget layouts
+        run: ./script/render_widget_layouts.sh "$RUNNER_TEMP/fan-control-widget-layouts"
+
       - name: Build Rust app
         run: cargo build --locked --package fan-app --bin FanControl
 

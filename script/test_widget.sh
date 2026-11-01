@@ -8,3 +8,8 @@ xcrun swiftc -parse-as-library -target arm64-apple-macosx14.0 \
   "$ROOT_DIR/Widget/Models/Reading.swift" "$ROOT_DIR/Widget/Tests/ReadingTests.swift" \
   -o "$OUTPUT/ReadingTests"
 "$OUTPUT/ReadingTests"
+xcrun swiftc -parse-as-library -target arm64-apple-macosx14.0 \
+  -sdk "$(xcrun --show-sdk-path)" -module-cache-path "$OUTPUT/module-cache" \
+  "$ROOT_DIR/Widget/Models/DialGeometry.swift" "$ROOT_DIR/Widget/Tests/DialGeometryTests.swift" \
+  -o "$OUTPUT/DialGeometryTests"
+"$OUTPUT/DialGeometryTests"
