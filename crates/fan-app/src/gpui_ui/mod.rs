@@ -17,11 +17,11 @@ use self::{
 };
 use crate::status_bar::{MenuBarDisplayMode, StatusBarController};
 use gpui::{
-    px, size, App, AppContext, AssetSource, Bounds, Entity, Result as GpuiResult, SharedString,
-    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind,
-    WindowOptions,
+    actions, px, size, App, AppContext, AssetSource, Bounds, Entity, KeyBinding, Menu, MenuItem,
+    Result as GpuiResult, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions,
 };
-use gpui_component::{Root, Theme};
+use gpui_component::Root;
 use objc2::{define_class, msg_send, rc::Retained, DefinedClass, MainThreadOnly};
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSUserDefaults};
 use std::borrow::Cow;
@@ -30,6 +30,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+actions!(fan_control, [QuitApp, CloseActiveWindow, DismissOverlay]);
 
 gpui_kit_assets::icon_assets!(
     FanIconAssets,
@@ -46,6 +48,7 @@ gpui_kit_assets::icon_assets!(
         LayoutGrid,
         Power,
         RotateCcw,
+        Search,
         Settings,
         SlidersHorizontal,
         Sparkles,
@@ -72,7 +75,7 @@ impl AssetSource for CombinedAssets {
 }
 
 const ONBOARDED_KEY: &str = "FanControlPanelIntroduced";
-const POPOVER_DISMISS_DEBOUNCE: Duration = Duration::from_millis(260);
+const STATUS_CLICK_DEBOUNCE: Duration = Duration::from_millis(160);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLICK_TICK_INTERVAL: Duration = Duration::from_millis(30);
 
@@ -107,7 +110,8 @@ struct WindowHandles {
     main: Option<WindowHandle<Root>>,
     popover: Option<WindowHandle<Root>>,
     popover_shown: bool,
-    popover_hidden_at: Option<Instant>,
+    popover_generation: u64,
+    popover_dismissed_by_status_click_at: Option<Instant>,
     auto_dismiss_popover: bool,
 }
 
@@ -126,6 +130,56 @@ fn load_language(demo: bool) {
     crate::i18n::set_override(language);
 }
 
+fn register_app_menus_and_shortcuts(
+    state: &Entity<AppState>,
+    handles: &Rc<RefCell<WindowHandles>>,
+    cx: &mut App,
+) {
+    cx.on_action(|_: &QuitApp, cx| cx.quit());
+    cx.on_action(|_: &CloseActiveWindow, cx| {
+        if let Some(active) = cx.active_window() {
+            // Defer so `update_window` runs after GPUI finishes dispatching the key event.
+            cx.defer(move |cx| {
+                let _ = cx.update_window(active, |_, window, _| {
+                    window.remove_window();
+                });
+            });
+        }
+    });
+    let esc_state = state.clone();
+    let esc_handles = handles.clone();
+    cx.on_action(move |_: &DismissOverlay, cx| {
+        let popover_open = esc_handles.borrow().popover_shown;
+        if popover_open {
+            let handles = esc_handles.clone();
+            cx.defer(move |cx| hide_popover(&handles, cx));
+            return;
+        }
+        esc_state.update(cx, |s, cx| {
+            if s.curve_editor.is_some() {
+                s.close_curve_editor(cx);
+            } else if s.language_menu_open {
+                s.language_menu_open = false;
+                cx.notify();
+            }
+        });
+    });
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", QuitApp, None),
+        KeyBinding::new("cmd-w", CloseActiveWindow, None),
+        KeyBinding::new("escape", DismissOverlay, None),
+    ]);
+    cx.set_menus(vec![Menu {
+        name: "Fan Control".into(),
+        items: vec![
+            MenuItem::action(crate::i18n::translate("关闭窗口"), CloseActiveWindow),
+            MenuItem::separator(),
+            MenuItem::action(crate::i18n::translate("退出 Fan Control"), QuitApp),
+        ],
+        disabled: false,
+    }]);
+}
+
 fn open_or_show_main(
     state: &Entity<AppState>,
     handles: &Rc<RefCell<WindowHandles>>,
@@ -134,8 +188,6 @@ fn open_or_show_main(
 ) {
     state.update(cx, |s, cx| s.navigate(section, cx));
 
-    // Extract handle before calling `cx.update_window` so `RefCell` is never borrowed across
-    // GPUI window updates or subsequent `borrow_mut` calls.
     let existing = handles.borrow().main;
     if let Some(existing) = existing {
         let updated = cx.update_window(existing.into(), |_, window, _| {
@@ -168,14 +220,18 @@ fn open_or_show_main(
         ..Default::default()
     };
     let state_clone = state.clone();
+    let state_close = state.clone();
     let handles_close = handles.clone();
     if let Ok(handle) = cx.open_window(options, move |window, cx| {
-        Theme::sync_system_appearance(Some(window), cx);
-        // Let the native titled window frame clip the Liquid Glass corners seamlessly.
+        glass::sync_glass_root_theme(window, cx);
         glass::attach_liquid_glass(window, 0.0, GlassStyle::Regular);
         glass::activate_app();
-        window.on_window_should_close(cx, move |_, _| {
+        window.on_window_should_close(cx, move |_, cx| {
             handles_close.borrow_mut().main = None;
+            state_close.update(cx, |s, _| {
+                s.curve_editor = None;
+                s.language_menu_open = false;
+            });
             true
         });
         let view = cx.new(|cx| MainWindowView::new(state_clone, window, cx));
@@ -189,7 +245,7 @@ fn hide_popover(handles: &Rc<RefCell<WindowHandles>>, cx: &mut App) {
     let existing = {
         let mut h = handles.borrow_mut();
         h.popover_shown = false;
-        h.popover_hidden_at = Some(Instant::now());
+        h.popover_generation = h.popover_generation.wrapping_add(1);
         h.popover
     };
     if let Some(existing) = existing {
@@ -202,14 +258,14 @@ fn hide_popover(handles: &Rc<RefCell<WindowHandles>>, cx: &mut App) {
 fn toggle_popover(
     state: &Entity<AppState>,
     handles: &Rc<RefCell<WindowHandles>>,
-    respect_dismiss_debounce: bool,
+    from_status_click: bool,
     cx: &mut App,
 ) {
-    let (currently_shown, just_dismissed, existing, auto_dismiss) = {
+    let (currently_shown, just_dismissed_by_status, existing, auto_dismiss) = {
         let h = handles.borrow();
-        let dismissed = respect_dismiss_debounce
-            && h.popover_hidden_at
-                .is_some_and(|at| at.elapsed() < POPOVER_DISMISS_DEBOUNCE);
+        let dismissed = from_status_click
+            && h.popover_dismissed_by_status_click_at
+                .is_some_and(|at| at.elapsed() < STATUS_CLICK_DEBOUNCE);
         (
             h.popover_shown,
             dismissed,
@@ -222,7 +278,8 @@ fn toggle_popover(
         hide_popover(handles, cx);
         return;
     }
-    if just_dismissed {
+    if just_dismissed_by_status {
+        handles.borrow_mut().popover_dismissed_by_status_click_at = None;
         return;
     }
 
@@ -233,20 +290,28 @@ fn toggle_popover(
         .and_then(|bar| glass::status_item_screen_rect(&bar.item));
 
     if let Some(existing) = existing {
+        let next_gen = {
+            let mut h = handles.borrow_mut();
+            h.popover_generation = h.popover_generation.wrapping_add(1);
+            h.popover_shown = true;
+            h.popover_dismissed_by_status_click_at = None;
+            h.popover_generation
+        };
+        let _ = next_gen;
         let updated = cx.update_window(existing.into(), |_, window, _| {
             glass::position_popover_window(window, anchor_rect, POPOVER_WIDTH, POPOVER_HEIGHT);
-            glass::activate_app();
             glass::order_front_window(window);
         });
         if updated.is_ok() {
-            let mut h = handles.borrow_mut();
-            h.popover_shown = true;
-            h.popover_hidden_at = None;
             return;
         }
-        handles.borrow_mut().popover = None;
+        let mut h = handles.borrow_mut();
+        h.popover = None;
+        h.popover_shown = false;
     }
 
+    // Create hidden first so positioning and Liquid Glass attachment finish before the window
+    // ever appears on screen (avoids flash at center and avoids post-show styleMask mutations).
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -255,8 +320,8 @@ fn toggle_popover(
         ))),
         titlebar: None,
         window_background: WindowBackgroundAppearance::Transparent,
-        focus: true,
-        show: true,
+        focus: false,
+        show: false,
         kind: WindowKind::PopUp,
         is_resizable: false,
         ..Default::default()
@@ -267,13 +332,20 @@ fn toggle_popover(
     let handles_open = handles.clone();
     let handles_hide = handles.clone();
     let handles_deact = handles.clone();
+
     let on_deactivate = auto_dismiss.then(|| {
         Rc::new(move |window: &mut gpui::Window| {
             let should_hide = {
                 let mut h = handles_deact.borrow_mut();
-                if h.popover_shown {
+                if h.popover_shown && glass::is_window_visible(window) {
                     h.popover_shown = false;
-                    h.popover_hidden_at = Some(Instant::now());
+                    // Only suppress the imminent status-bar click if the cursor is actually over
+                    // the status item button so genuine quick re-opens are never swallowed.
+                    if anchor_rect.is_some_and(glass::cursor_inside_rect) {
+                        h.popover_dismissed_by_status_click_at = Some(Instant::now());
+                    } else {
+                        h.popover_dismissed_by_status_click_at = None;
+                    }
                     true
                 } else {
                     false
@@ -286,9 +358,8 @@ fn toggle_popover(
     });
 
     if let Ok(handle) = cx.open_window(options, move |window, cx| {
-        Theme::sync_system_appearance(Some(window), cx);
+        glass::sync_glass_root_theme(window, cx);
         glass::configure_popover_window(window, anchor_rect, POPOVER_WIDTH, POPOVER_HEIGHT);
-        glass::activate_app();
         let view = cx.new(|cx| {
             PopoverView::new(
                 state_clone,
@@ -303,12 +374,14 @@ fn toggle_popover(
                 cx,
             )
         });
-        cx.new(|cx| Root::new(view, window, cx))
+        let root = cx.new(|cx| Root::new(view, window, cx));
+        glass::order_front_window(window);
+        root
     }) {
         let mut h = handles.borrow_mut();
         h.popover = Some(handle);
         h.popover_shown = true;
-        h.popover_hidden_at = None;
+        h.popover_dismissed_by_status_click_at = None;
     }
 }
 
@@ -349,6 +422,7 @@ pub fn run(demo: bool, smoke: bool) {
             auto_dismiss_popover: !smoke,
             ..Default::default()
         }));
+        register_app_menus_and_shortcuts(&state, &handles, cx);
 
         // Safe fan handback on application quit.
         let quit_state = state.clone();
@@ -365,22 +439,19 @@ pub fn run(demo: bool, smoke: bool) {
             toggle_popover(&state, &handles, false, cx);
         }
 
-        // Smoke test mode: open main window + popover in isolated demo mode, exercise
-        // repeated popover toggles, main window close/re-open, all sections, curve editor,
-        // and menu bar modes, then exit cleanly.
+        // Smoke test mode: exercise repeated popover toggles, main window close/re-open,
+        // pending speed cancellation on reset, all sections, curve editor ranges, and modes.
         if smoke {
             let smoke_state = state.clone();
             let smoke_handles = handles.clone();
             cx.spawn(async move |cx| {
-                // Allow worker demo discovery to populate fans.
                 cx.background_executor()
                     .timer(Duration::from_millis(300))
                     .await;
                 cx.update(|cx| {
                     smoke_state.update(cx, |s, cx| s.poll_tick(true, cx));
                     open_or_show_main(&smoke_state, &smoke_handles, Section::Overview, cx);
-                    // Exercise repeated popover open -> hide -> re-open -> hide -> re-open
-                    // to guard against RefCell re-entrancy or window handle panics.
+                    // Repeated popover open -> hide -> re-open -> hide -> re-open
                     toggle_popover(&smoke_state, &smoke_handles, false, cx);
                     assert!(smoke_handles.borrow().popover_shown);
                     toggle_popover(&smoke_state, &smoke_handles, false, cx);
@@ -396,7 +467,7 @@ pub fn run(demo: bool, smoke: bool) {
                     .timer(Duration::from_millis(120))
                     .await;
                 cx.update(|cx| {
-                    // Exercise closing main window and reopening cleanly.
+                    // Close main window and reopen cleanly.
                     let main_handle = smoke_handles.borrow().main;
                     if let Some(h) = main_handle {
                         let _ = cx.update_window(h.into(), |_, window, _| {
@@ -405,6 +476,12 @@ pub fn run(demo: bool, smoke: bool) {
                     }
                     open_or_show_main(&smoke_state, &smoke_handles, Section::Overview, cx);
                     assert!(smoke_handles.borrow().main.is_some());
+
+                    // Verify Root theme background is transparent so NSGlassEffectView shows through.
+                    assert_eq!(
+                        gpui_component::Theme::global(cx).tokens.background,
+                        gpui::transparent_black().into()
+                    );
 
                     // Verify all 5 sidebar sections + Back/Forward history navigation.
                     for section in Section::ALL {
@@ -417,7 +494,7 @@ pub fn run(demo: bool, smoke: bool) {
                         assert_eq!(s.section, Section::Settings);
                     });
 
-                    // Verify curve editor open, add point, undo, close.
+                    // Verify curve editor open, source switch, hysteresis, add point, undo, close.
                     smoke_state.update(cx, |s, cx| {
                         s.open_curve_editor(None, cx);
                         let before = s.curve_editor.as_ref().unwrap().curve.points.len();
@@ -428,6 +505,7 @@ pub fn run(demo: bool, smoke: bool) {
                         );
                         s.curve_undo(cx);
                         assert_eq!(s.curve_editor.as_ref().unwrap().curve.points.len(), before);
+                        s.curve_nudge_hysteresis(2.0, cx);
                         s.close_curve_editor(cx);
                     });
 
@@ -436,10 +514,11 @@ pub fn run(demo: bool, smoke: bool) {
                         smoke_state.update(cx, |s, cx| s.set_menu_bar_mode(mode, cx));
                     }
 
-                    // Verify sensor group filters & sort orders.
+                    // Verify sensor group filters & search query.
                     for grp in crate::sensor_list::GroupFilter::ALL {
                         smoke_state.update(cx, |s, cx| {
                             s.sensor_group = grp;
+                            s.sensor_query = "cpu".into();
                             cx.notify();
                         });
                     }
@@ -460,7 +539,6 @@ pub fn run(demo: bool, smoke: bool) {
         let tick_handles = handles.clone();
         let tick_url = url_open_flag.clone();
         cx.spawn(async move |cx| {
-            // Keep the Objective-C status-bar click bridge alive for the entire app lifetime.
             let _keep_bridge = _bridge_guard;
             let mut last_poll = Instant::now()
                 .checked_sub(POLL_INTERVAL)
@@ -471,42 +549,41 @@ pub fn run(demo: bool, smoke: bool) {
                     cx.update(|cx| cx.quit());
                     break;
                 }
-                let clicked = click_rx.try_recv().is_ok();
-                while click_rx.try_recv().is_ok() {}
+                let mut click_count = 0usize;
+                while click_rx.try_recv().is_ok() {
+                    click_count += 1;
+                }
                 let url_open = {
                     let mut f = tick_url.borrow_mut();
                     let v = *f;
                     *f = false;
                     v
                 };
-                let should_poll = clicked || url_open || last_poll.elapsed() >= POLL_INTERVAL;
-                if !clicked && !url_open && !should_poll {
+                let should_poll = click_count > 0 || url_open || last_poll.elapsed() >= POLL_INTERVAL;
+                if !should_poll {
                     continue;
                 }
-                if should_poll {
-                    last_poll = Instant::now();
-                }
+                last_poll = Instant::now();
                 cx.update(|cx| {
-                    if clicked {
+                    // Process odd clicks cleanly without silently swallowing toggles.
+                    if click_count % 2 == 1 {
                         toggle_popover(&tick_state, &tick_handles, true, cx);
                     }
                     if url_open {
                         hide_popover(&tick_handles, cx);
                         open_or_show_main(&tick_state, &tick_handles, Section::Overview, cx);
                     }
-                    if should_poll {
-                        let (main_handle, pop_vis) = {
-                            let h = tick_handles.borrow();
-                            (h.main, h.popover_shown)
-                        };
-                        let main_vis = main_handle
-                            .and_then(|h| {
-                                cx.update_window(h.into(), |_, w, _| glass::is_window_visible(w))
-                                    .ok()
-                            })
-                            .unwrap_or(false);
-                        tick_state.update(cx, |s, cx| s.poll_tick(main_vis || pop_vis, cx));
-                    }
+                    let (main_handle, pop_vis) = {
+                        let h = tick_handles.borrow();
+                        (h.main, h.popover_shown)
+                    };
+                    let main_vis = main_handle
+                        .and_then(|h| {
+                            cx.update_window(h.into(), |_, w, _| glass::is_window_visible(w))
+                                .ok()
+                        })
+                        .unwrap_or(false);
+                    tick_state.update(cx, |s, cx| s.poll_tick(main_vis || pop_vis, cx));
                 });
             }
         })
@@ -539,7 +616,6 @@ pub fn render_gpui_previews() {
                 cx.update(|cx| {
                     state.update(cx, |s, cx| {
                         s.poll_tick(true, cx);
-                        // Seed synthetic 10-minute trend history for realistic charts.
                         let now = Instant::now();
                         for age in (0..60).rev().map(|i| i * 10u64) {
                             s.history.record(crate::trend::Sample {
@@ -554,7 +630,6 @@ pub fn render_gpui_previews() {
                     toggle_popover(&state, &handles, false, cx);
                 });
 
-                // Wait for GPUI Metal first frame.
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
@@ -566,14 +641,16 @@ pub fn render_gpui_previews() {
                             (h.main, h.popover)
                         };
                         if let Some(h) = main_h {
-                            let _ = cx.update_window(h.into(), |_, w, _| {
+                            let _ = cx.update_window(h.into(), |_, w, cx| {
                                 glass::set_window_appearance(w, dark);
+                                glass::sync_glass_root_theme(w, cx);
                                 w.refresh();
                             });
                         }
                         if let Some(h) = pop_h {
-                            let _ = cx.update_window(h.into(), |_, w, _| {
+                            let _ = cx.update_window(h.into(), |_, w, cx| {
                                 glass::set_window_appearance(w, dark);
+                                glass::sync_glass_root_theme(w, cx);
                                 w.refresh();
                             });
                         }

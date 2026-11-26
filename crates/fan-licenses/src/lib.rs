@@ -428,32 +428,32 @@ fn package_materials(
         files.insert(declared.clone());
     }
     if files.is_empty() {
-        if sources.packages.iter().any(|pin| {
-            pin.crate_name == package.name
-                && pin.version == package.version
-                && pin.reviewed_expression.is_some()
-        }) {
-            return Err("original license files missing for reviewed legacy expression".into());
+        let pinned_entry = sources
+            .packages
+            .iter()
+            .find(|pin| pin.crate_name == package.name && pin.version == package.version);
+        if let Some(pin) = pinned_entry {
+            if pin.reviewed_expression.is_some() {
+                return Err("original license files missing for reviewed legacy expression".into());
+            }
+            // Explicitly pinned upstream sources must always verify cleanly; never downgrade
+            // a pinned revision or SHA-256 mismatch into a generic SPDX declaration.
+            return pinned_materials(package, root, sources, vendor);
         }
-        match pinned_materials(package, root, sources, vendor) {
-            Ok(pinned) => return Ok(pinned),
-            Err(err) => {
-                if allow_spdx_fallback {
-                    if let Some(spdx) = package.license.as_deref() {
-                        let notice = format!(
-                            "{} {}\nSPDX-License-Identifier: {spdx}\n(Published crates.io archive did not include a standalone LICENSE file.)\n",
-                            package.name, package.version
-                        );
-                        return Ok(vec![Material {
-                            relative: PathBuf::from("SPDX-DECLARATION.txt"),
-                            bytes: notice.into_bytes(),
-                            source_url: None,
-                        }]);
-                    }
-                }
-                return Err(err);
+        if allow_spdx_fallback {
+            if let Some(spdx) = package.license.as_deref() {
+                let notice = format!(
+                    "{} {}\nSPDX-License-Identifier: {spdx}\n(Published crates.io archive did not include a standalone LICENSE file.)\n",
+                    package.name, package.version
+                );
+                return Ok(vec![Material {
+                    relative: PathBuf::from("SPDX-DECLARATION.txt"),
+                    bytes: notice.into_bytes(),
+                    source_url: None,
+                }]);
             }
         }
+        return pinned_materials(package, root, sources, vendor);
     }
     let mut materials: Vec<Material> = files
         .into_iter()
@@ -924,6 +924,9 @@ mod tests {
         sources.packages[0].revision = revision.into();
         fixture.write("vendor/pinned-LICENSE.md", b"Tampered legal text\n");
         assert!(collect_with_sources(&metadata, &output, &sources, &vendor).is_err());
+        // Even with `--allow-spdx-declaration`, an explicitly pinned upstream source mismatch
+        // must fail rather than downgrading to a generic SPDX declaration.
+        assert!(collect_with_sources_opts(&metadata, &output, &sources, &vendor, true).is_err());
         fixture.write("vendor/pinned-LICENSE.md", original);
         assert_eq!(
             collect_with_sources(&metadata, &output, &sources, &vendor).unwrap(),

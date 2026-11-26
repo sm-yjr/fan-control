@@ -1,7 +1,8 @@
-//! GPUI Liquid Glass floating menu-bar dashboard panel with pinned header/footer
-//! and scrollable card body so controls and actions are never clipped on any display.
+//! GPUI Liquid Glass floating menu-bar dashboard panel with pinned header/footer,
+//! scrollable card body, transparent Root synthesis, curve-mode protection, and Escape dismissal.
 use crate::gpui_ui::{
     charts::{rpm_arc_gauge, temperature_trend_chart},
+    glass,
     primitives::{
         glass_card, glass_segmented, hairline, pill_button, squircle_badge, status_badge,
         step_slider, t, vector_icon, ButtonStyle,
@@ -13,7 +14,6 @@ use crate::presenter::Plan;
 use gpui::{
     div, prelude::*, px, AnyElement, Context, Entity, FontWeight, MouseButton, Render, Window,
 };
-use gpui_component::Theme;
 use gpui_kit_assets::IconName;
 use std::rc::Rc;
 
@@ -41,7 +41,7 @@ impl PopoverView {
     ) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         cx.observe_window_appearance(window, |_, window, cx| {
-            Theme::sync_system_appearance(Some(window), cx);
+            glass::sync_glass_root_theme(window, cx);
         })
         .detach();
         if let Some(deactivate) = on_deactivate {
@@ -70,8 +70,10 @@ impl Render for PopoverView {
         let bias = st.current_bias();
         let custom_pct = st
             .pending_speed
-            .map(|(p, _)| p)
+            .map(|p| p.percent)
             .unwrap_or(view.custom_percent);
+        let custom_curves = st.custom_uses_curves();
+        let force_fixed = st.popover_fixed_override;
         let saving = st.pending_policy_save.is_some() || st.snapshot.installing;
         let pref_notice = st.preference_notice.clone();
         let pref_is_err = st.preference_notice_is_error;
@@ -160,7 +162,7 @@ impl Render for PopoverView {
                 None
             };
 
-        // ── Hero Card: Chip Temperature + 10-Min Metal Trend ──
+        // ── Hero Card: Chip Temperature + Fixed 600s Metal Trend ──
         let temp_card = glass_card(&theme).p(px(12.0)).child(
             div()
                 .w_full()
@@ -385,17 +387,19 @@ impl Render for PopoverView {
                     });
             }
             Plan::Custom => {
-                let pct_steps: Vec<i32> = (0..=20).map(|i| i * 5).collect();
-                let state_speed = self.state.clone();
                 let state_curve = self.state.clone();
                 let on_hide = self.on_hide_popover.clone();
                 let on_open = self.on_open_main.clone();
-                control_card = control_card
-                    .child(
+
+                if custom_curves && !force_fixed {
+                    // Protect active fan curves from accidental overwrite by a stray slider click.
+                    let state_override = self.state.clone();
+                    control_card = control_card.child(
                         div()
                             .w_full()
                             .flex()
                             .flex_row()
+                            .flex_wrap()
                             .items_center()
                             .justify_between()
                             .gap(px(8.0))
@@ -404,41 +408,108 @@ impl Render for PopoverView {
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.text_primary)
-                                    .whitespace_nowrap()
-                                    .child(format!(
-                                        "{} {:.0}%",
-                                        crate::i18n::translate("固定速度"),
-                                        custom_pct
-                                    )),
+                                    .child(t("温度曲线生效中")),
                             )
-                            .child(pill_button(
-                                "pop-edit-curve",
-                                "编辑曲线…",
-                                ButtonStyle::Secondary,
-                                view.controls_enabled,
-                                &theme,
-                                move |_, cx| {
-                                    state_curve.update(cx, |s, cx| s.open_curve_editor(None, cx));
-                                    let on_hide = on_hide.clone();
-                                    let on_open = on_open.clone();
-                                    cx.defer(move |cx| {
-                                        on_hide(cx);
-                                        on_open(Section::Fans, cx);
-                                    });
-                                },
-                            )),
-                    )
-                    .child(step_slider(
-                        "pop-custom-pct",
-                        &pct_steps,
-                        ((custom_pct / 5.0).round() as i32 * 5).clamp(0, 100),
-                        None,
-                        view.controls_enabled,
-                        &theme,
-                        move |v, _, cx| {
-                            state_speed.update(cx, |s, cx| s.set_custom_percent(v as f64, cx));
-                        },
-                    ));
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(pill_button(
+                                        "pop-switch-fixed",
+                                        "改用固定速度",
+                                        ButtonStyle::Link,
+                                        view.controls_enabled,
+                                        &theme,
+                                        move |_, cx| {
+                                            state_override.update(cx, |s, cx| {
+                                                s.popover_fixed_override = true;
+                                                cx.notify();
+                                            });
+                                        },
+                                    ))
+                                    .child(pill_button(
+                                        "pop-edit-curve",
+                                        "编辑曲线…",
+                                        ButtonStyle::Secondary,
+                                        view.controls_enabled,
+                                        &theme,
+                                        move |_, cx| {
+                                            state_curve
+                                                .update(cx, |s, cx| s.open_curve_editor(None, cx));
+                                            let on_hide = on_hide.clone();
+                                            let on_open = on_open.clone();
+                                            cx.defer(move |cx| {
+                                                on_hide(cx);
+                                                on_open(Section::Fans, cx);
+                                            });
+                                        },
+                                    )),
+                            ),
+                    );
+                } else {
+                    let pct_steps: Vec<i32> = (0..=20).map(|i| i * 5).collect();
+                    let state_speed = self.state.clone();
+                    control_card = control_card
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.text_primary)
+                                        .whitespace_nowrap()
+                                        .child(format!(
+                                            "{} {:.0}%",
+                                            crate::i18n::translate("固定速度"),
+                                            custom_pct
+                                        )),
+                                )
+                                .child(pill_button(
+                                    "pop-edit-curve",
+                                    "编辑曲线…",
+                                    ButtonStyle::Secondary,
+                                    view.controls_enabled,
+                                    &theme,
+                                    move |_, cx| {
+                                        state_curve
+                                            .update(cx, |s, cx| s.open_curve_editor(None, cx));
+                                        let on_hide = on_hide.clone();
+                                        let on_open = on_open.clone();
+                                        cx.defer(move |cx| {
+                                            on_hide(cx);
+                                            on_open(Section::Fans, cx);
+                                        });
+                                    },
+                                )),
+                        )
+                        .child(step_slider(
+                            "pop-custom-pct",
+                            &pct_steps,
+                            ((custom_pct / 5.0).round() as i32 * 5).clamp(0, 100),
+                            None,
+                            view.controls_enabled,
+                            &theme,
+                            move |v, _, cx| {
+                                state_speed.update(cx, |s, cx| s.set_custom_percent(v as f64, cx));
+                            },
+                        ))
+                        .when(custom_curves, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.warning)
+                                    .child(t("拖动滑块后将以固定速度替换当前曲线。")),
+                            )
+                        });
+                }
             }
             Plan::System | Plan::Mixed => {}
         }
@@ -508,7 +579,7 @@ impl Render for PopoverView {
                 .justify_center()
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover).text_color(danger))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     cx.quit();
                 })
                 .child(vector_icon(IconName::Power, 14.5, theme.text_secondary))
@@ -551,7 +622,6 @@ impl Render for PopoverView {
                 )
             });
 
-        // ── Scrollable Middle Body (prevents any clipping when banners or 3+ fans appear) ──
         let body = div()
             .id("popover-scroll")
             .flex_1()
@@ -572,15 +642,19 @@ impl Render for PopoverView {
                     .child(control_card),
             );
 
+        let on_esc = self.on_hide_popover.clone();
         div()
             .size_full()
-            .rounded(px(18.0))
             .bg(theme.popover_bg)
-            .border_1()
-            .border_color(theme.card_sheen)
             .overflow_hidden()
             .flex()
             .flex_col()
+            .on_key_down(move |ev, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    let on_esc = on_esc.clone();
+                    cx.defer(move |cx| on_esc(cx));
+                }
+            })
             .child(header)
             .child(body)
             .child(footer)

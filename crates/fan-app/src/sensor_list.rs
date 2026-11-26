@@ -1,8 +1,7 @@
 //! Pure sensor grouping, search filtering, and hottest-first sorting shared by
-//! the GPUI sensor details page and unit tests.
-#[cfg(test)]
-use fan_core::Sensor;
-use fan_core::SensorGroup;
+//! the GPUI sensor details page (`uniform_list`) and unit tests.
+use crate::i18n;
+use fan_core::{Sensor, SensorGroup};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum GroupFilter {
@@ -28,7 +27,6 @@ impl GroupFilter {
         }
     }
 
-    #[allow(dead_code)]
     pub fn matches(self, group: SensorGroup) -> bool {
         match self {
             Self::All => true,
@@ -59,102 +57,110 @@ impl SortOrder {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Entry {
+    Header(String),
+    Reading(Sensor),
+}
+
+impl Entry {
+    #[cfg(test)]
+    pub fn same_layout(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Header(a), Self::Header(b)) => a == b,
+            (Self::Reading(a), Self::Reading(b)) => {
+                a.key == b.key && a.name == b.name && a.group == b.group
+            }
+            _ => false,
+        }
+    }
+}
+
+pub(crate) fn group_rank(group: SensorGroup) -> (u8, &'static str) {
+    match group {
+        SensorGroup::Cpu => (0, "处理器"),
+        SensorGroup::Gpu => (1, "图形处理器"),
+        SensorGroup::System => (2, "机身内部（不代表键盘表面温度）"),
+        SensorGroup::Other => (3, "其他"),
+    }
+}
+
+pub(crate) fn is_headroom(sensor: &Sensor) -> bool {
+    sensor.name.contains("热余量")
+}
+
+/// Builds the full grouped or hottest-first virtual list model for sensor telemetry.
+/// Matches against original name, localized display name, and raw SMC key, and sorts
+/// non-absolute CPU thermal headroom slots separately after real temperatures.
+pub(crate) fn entries(
+    sensors: &[Sensor],
+    query: &str,
+    filter: GroupFilter,
+    sort: SortOrder,
+    fresh: bool,
+) -> Vec<Entry> {
+    let needle = query.trim().to_lowercase();
+    let mut filtered: Vec<Sensor> = sensors
+        .iter()
+        .filter(|s| filter.matches(s.group))
+        .filter(|s| {
+            if needle.is_empty() {
+                return true;
+            }
+            let translated = i18n::translate(&s.name).to_lowercase();
+            s.name.to_lowercase().contains(&needle)
+                || translated.contains(&needle)
+                || s.key.to_lowercase().contains(&needle)
+        })
+        .map(|s| Sensor {
+            key: s.key.clone(),
+            name: s.name.clone(),
+            group: s.group,
+            value: if fresh {
+                s.value.filter(|v| v.is_finite())
+            } else {
+                None
+            },
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        return vec![Entry::Header("没有匹配的传感器。".into())];
+    }
+
+    if sort == SortOrder::HottestFirst {
+        filtered.sort_by(|a, b| {
+            is_headroom(a)
+                .cmp(&is_headroom(b))
+                .then_with(|| b.value.unwrap_or(-1.0).total_cmp(&a.value.unwrap_or(-1.0)))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        return filtered.into_iter().map(Entry::Reading).collect();
+    }
+
+    filtered.sort_by(|a, b| {
+        group_rank(a.group)
+            .0
+            .cmp(&group_rank(b.group).0)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let mut rows = Vec::new();
+    let mut current: Option<u8> = None;
+    for s in filtered {
+        let (rank, title) = group_rank(s.group);
+        if current != Some(rank) {
+            rows.push(Entry::Header(title.into()));
+            current = Some(rank);
+        }
+        rows.push(Entry::Reading(s));
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Clone, Debug, PartialEq)]
-    enum Entry {
-        Header(String),
-        Reading(Sensor),
-    }
-
-    impl Entry {
-        fn same_layout(&self, other: &Self) -> bool {
-            match (self, other) {
-                (Self::Header(a), Self::Header(b)) => a == b,
-                (Self::Reading(a), Self::Reading(b)) => {
-                    a.key == b.key && a.name == b.name && a.group == b.group
-                }
-                _ => false,
-            }
-        }
-    }
-
-    fn group_rank(group: SensorGroup) -> (u8, &'static str) {
-        match group {
-            SensorGroup::Cpu => (0, "处理器"),
-            SensorGroup::Gpu => (1, "图形处理器"),
-            SensorGroup::System => (2, "机身内部（不代表键盘表面温度）"),
-            SensorGroup::Other => (3, "其他"),
-        }
-    }
-
-    fn is_headroom(sensor: &Sensor) -> bool {
-        sensor.name.contains("热余量")
-    }
-
-    fn entries(
-        sensors: &[Sensor],
-        query: &str,
-        filter: GroupFilter,
-        sort: SortOrder,
-        fresh: bool,
-    ) -> Vec<Entry> {
-        let needle = query.trim().to_lowercase();
-        let mut filtered: Vec<Sensor> = sensors
-            .iter()
-            .filter(|s| filter.matches(s.group))
-            .filter(|s| {
-                needle.is_empty()
-                    || s.name.to_lowercase().contains(&needle)
-                    || s.key.to_lowercase().contains(&needle)
-            })
-            .map(|s| Sensor {
-                key: s.key.clone(),
-                name: s.name.clone(),
-                group: s.group,
-                value: if fresh {
-                    s.value.filter(|v| v.is_finite())
-                } else {
-                    None
-                },
-            })
-            .collect();
-
-        if filtered.is_empty() {
-            return vec![Entry::Header("没有匹配的传感器。".into())];
-        }
-
-        if sort == SortOrder::HottestFirst {
-            filtered.sort_by(|a, b| {
-                is_headroom(a)
-                    .cmp(&is_headroom(b))
-                    .then_with(|| b.value.unwrap_or(-1.0).total_cmp(&a.value.unwrap_or(-1.0)))
-                    .then_with(|| a.name.cmp(&b.name))
-            });
-            return filtered.into_iter().map(Entry::Reading).collect();
-        }
-
-        filtered.sort_by(|a, b| {
-            group_rank(a.group)
-                .0
-                .cmp(&group_rank(b.group).0)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        let mut rows = Vec::new();
-        let mut current: Option<u8> = None;
-        for s in filtered {
-            let (rank, title) = group_rank(s.group);
-            if current != Some(rank) {
-                rows.push(Entry::Header(title.into()));
-                current = Some(rank);
-            }
-            rows.push(Entry::Reading(s));
-        }
-        rows
-    }
 
     fn sensor(key: &str, group: SensorGroup, value: Option<f64>) -> Sensor {
         Sensor {

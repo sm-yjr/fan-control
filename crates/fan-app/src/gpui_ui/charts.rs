@@ -1,15 +1,23 @@
 //! GPU-accelerated Metal vector visualizations rendered via GPUI `canvas` and `PathBuilder`:
-//! 180° RPM arc gauge, 10-minute temperature trend area chart, and interactive fan curve canvas.
+//! 180° RPM arc gauge, fixed 600-second time-domain temperature trend chart, and interactive
+//! draggable fan curve canvas (supporting 0..100% thermal demand, 0..120°C temperature, and
+//! -20%..100% speed including fan-off floor).
 use crate::gpui_ui::primitives::t;
 use crate::gpui_ui::theme::GlassTheme;
 use crate::presenter::{FanCard, Tone};
 use crate::trend::History;
-use fan_core::Curve;
+use fan_core::{Curve, FAN_OFF_PERCENT, THERMAL_DEMAND_KEY};
 use gpui::{
-    canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, Bounds,
-    FontWeight, PathBuilder, Pixels, Point, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, App, Bounds,
+    FontWeight, MouseButton, PathBuilder, Pixels, Point, Window,
 };
+use std::cell::RefCell;
 use std::f32::consts::PI;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+const TREND_WINDOW_SECS: f32 = 600.0;
+const TREND_GAP_BREAK_SECS: f64 = 25.0;
 
 /// 180° semicircular Metal-rendered RPM arc gauge with glowing tip indicator and crisp digits.
 pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl IntoElement {
@@ -129,7 +137,8 @@ pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl 
         )
 }
 
-/// 10-minute temperature trend chart with translucent gradient area fill and live glow endpoint.
+/// Fixed 600-second (10-minute) time-domain temperature trend chart with real timestamp
+/// positioning, gap-breaking across sampling pauses, and live glow endpoint.
 pub fn temperature_trend_chart(
     theme: &GlassTheme,
     history: &History,
@@ -137,8 +146,23 @@ pub fn temperature_trend_chart(
     fresh: bool,
     height: f32,
 ) -> impl IntoElement {
-    let temps: Vec<Option<f64>> = history.samples().map(|s| s.temperature).collect();
-    let valid: Vec<f64> = temps.iter().flatten().copied().collect();
+    let now = Instant::now();
+    let window_start = now
+        .checked_sub(Duration::from_secs(TREND_WINDOW_SECS as u64))
+        .unwrap_or(now);
+
+    let timed_samples: Vec<(Instant, Option<f64>)> = history
+        .samples()
+        .filter(|s| s.at >= window_start)
+        .map(|s| (s.at, s.temperature.filter(|v| v.is_finite())))
+        .collect();
+
+    let mut valid: Vec<f64> = timed_samples.iter().filter_map(|(_, t)| *t).collect();
+    if fresh {
+        if let Some(v) = latest_temp.filter(|v| v.is_finite()) {
+            valid.push(v);
+        }
+    }
     let (min_t, max_t) = if valid.is_empty() {
         (40.0, 80.0)
     } else {
@@ -181,35 +205,7 @@ pub fn temperature_trend_chart(
                 }
             }
 
-            if temps.len() < 2 {
-                if fresh {
-                    if let Some(v) = latest_temp {
-                        let span_t = (max_t - min_t).max(1.0);
-                        let norm = ((v - min_t) / span_t).clamp(0.0, 1.0) as f32;
-                        let py = y0 + h * (1.0 - norm);
-                        let mut line = PathBuilder::stroke(px(2.0));
-                        line.move_to(point(px(x0), px(py)));
-                        line.line_to(point(px(x0 + w), px(py)));
-                        if let Ok(path) = line.build() {
-                            window.paint_path(path, line_color.opacity(0.65));
-                        }
-                        if let Some(halo) = build_circle_path(x0 + w, py, 6.0) {
-                            window.paint_path(halo, line_color.opacity(0.28));
-                        }
-                        if let Some(dot) = build_circle_path(x0 + w, py, 3.2) {
-                            window.paint_path(dot, line_color);
-                        }
-                    }
-                }
-                return;
-            }
             let span_t = (max_t - min_t).max(1.0);
-            let step_x = w / (temps.len() - 1) as f32;
-
-            // Break into contiguous runs whenever readings are missing.
-            let mut run: Vec<Point<Pixels>> = Vec::new();
-            let mut last_pt: Option<Point<Pixels>> = None;
-
             let flush_run = |pts: &[Point<Pixels>], window: &mut Window| {
                 if pts.len() < 2 {
                     return;
@@ -242,25 +238,40 @@ pub fn temperature_trend_chart(
                 }
             };
 
-            for (i, temp) in temps.iter().enumerate() {
+            let mut run: Vec<Point<Pixels>> = Vec::new();
+            let mut prev_at: Option<Instant> = None;
+
+            for &(at, temp) in &timed_samples {
+                if let Some(prev) = prev_at {
+                    if at.saturating_duration_since(prev).as_secs_f64() > TREND_GAP_BREAK_SECS {
+                        flush_run(&run, window);
+                        run.clear();
+                    }
+                }
                 if let Some(v) = temp {
-                    let norm = ((*v - min_t) / span_t).clamp(0.0, 1.0) as f32;
-                    let pt = point(px(x0 + i as f32 * step_x), px(y0 + h * (1.0 - norm)));
-                    run.push(pt);
-                    last_pt = Some(pt);
+                    let age = now.saturating_duration_since(at).as_secs_f32();
+                    let nx = (1.0 - (age / TREND_WINDOW_SECS)).clamp(0.0, 1.0);
+                    let ny = ((v - min_t) / span_t).clamp(0.0, 1.0) as f32;
+                    run.push(point(px(x0 + w * nx), px(y0 + h * (1.0 - ny))));
+                    prev_at = Some(at);
                 } else {
                     flush_run(&run, window);
                     run.clear();
+                    prev_at = None;
                 }
             }
             flush_run(&run, window);
 
+            // Draw the live glowing dot strictly at `now` (right edge) only when reading is fresh.
             if fresh {
-                if let Some(pt) = last_pt {
-                    if let Some(halo) = build_circle_path(f32::from(pt.x), f32::from(pt.y), 6.0) {
+                if let Some(v) = latest_temp.filter(|v| v.is_finite()) {
+                    let ny = ((v - min_t) / span_t).clamp(0.0, 1.0) as f32;
+                    let py = y0 + h * (1.0 - ny);
+                    let px_end = x0 + w;
+                    if let Some(halo) = build_circle_path(px_end, py, 6.0) {
                         window.paint_path(halo, line_color.opacity(0.28));
                     }
-                    if let Some(dot) = build_circle_path(f32::from(pt.x), f32::from(pt.y), 3.2) {
+                    if let Some(dot) = build_circle_path(px_end, py, 3.2) {
                         window.paint_path(dot, line_color);
                     }
                 }
@@ -316,31 +327,59 @@ pub fn temperature_trend_chart(
         )
 }
 
-/// Interactive Metal fan curve plot: grid, live sensor line, gradient fill, and control points.
+/// Interactive Metal fan curve plot supporting click-to-select & drag-to-edit control points,
+/// true sensor X-axis range (`0..100%` or `0..120°C`), and full `-20%..100%` speed axis.
+#[allow(clippy::too_many_arguments)]
 pub fn curve_plot_canvas(
     theme: &GlassTheme,
     curve: &Curve,
     live_value: Option<f64>,
     selected_idx: Option<usize>,
     height: f32,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+    on_drag: impl Fn(f64, f64, bool, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let mut points = curve.points.clone();
     points.sort_by(|a, b| a.temperature.total_cmp(&b.temperature));
-    let live_interp = live_value.map(|v| (v, curve.interpolate(v)));
+    let is_demand = curve.sensor_key == THERMAL_DEMAND_KEY;
     let min_x = 0.0f64;
-    let max_x = 100.0f64;
+    let max_x = if is_demand { 100.0 } else { 120.0 };
+    let min_y = FAN_OFF_PERCENT;
+    let max_y = 100.0f64;
+    let live_interp = live_value.map(|v| (v, curve.interpolate(v)));
     let accent = theme.accent;
     let grid_color = theme.hairline;
+    let zero_line_color = theme.text_muted.opacity(0.45);
     let live_color = theme.warning;
     let fill_top = accent.opacity(0.24);
     let fill_bottom = accent.opacity(0.02);
 
-    canvas(
-        move |_bounds, _window, _cx| {},
+    let last_bounds: Rc<RefCell<Option<Bounds<Pixels>>>> = Rc::new(RefCell::new(None));
+    let bounds_paint = last_bounds.clone();
+    let bounds_down = last_bounds.clone();
+    let bounds_move = last_bounds.clone();
+    let points_down = points.clone();
+    let on_drag = Rc::new(on_drag);
+    let on_drag_down = on_drag.clone();
+
+    let map_to_data = move |pos: Point<Pixels>, bounds: Bounds<Pixels>| -> (f64, f64) {
+        let x0 = f32::from(bounds.origin.x) + 12.0;
+        let y0 = f32::from(bounds.origin.y) + 10.0;
+        let w = (f32::from(bounds.size.width) - 24.0).max(20.0);
+        let h = (f32::from(bounds.size.height) - 20.0).max(20.0);
+        let nx = ((f32::from(pos.x) - x0) / w).clamp(0.0, 1.0) as f64;
+        let ny = (1.0 - ((f32::from(pos.y) - y0) / h)).clamp(0.0, 1.0) as f64;
+        (min_x + nx * (max_x - min_x), min_y + ny * (max_y - min_y))
+    };
+
+    let plot = canvas(
+        move |bounds, _window, _cx| {
+            *bounds_paint.borrow_mut() = Some(bounds);
+        },
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _cx| {
-            let x0 = f32::from(bounds.origin.x) + 10.0;
+            let x0 = f32::from(bounds.origin.x) + 12.0;
             let y0 = f32::from(bounds.origin.y) + 10.0;
-            let w = (f32::from(bounds.size.width) - 20.0).max(20.0);
+            let w = (f32::from(bounds.size.width) - 24.0).max(20.0);
             let h = (f32::from(bounds.size.height) - 20.0).max(20.0);
 
             // Grid lines (25% steps).
@@ -360,12 +399,22 @@ pub fn curve_plot_canvas(
                 }
             }
 
+            // Highlight 0% RPM baseline (separating fan-off region -20..0% from spinning 0..100%).
+            let zero_ny = ((0.0 - min_y) / (max_y - min_y)) as f32;
+            let zero_y = y0 + h * (1.0 - zero_ny);
+            let mut zline = PathBuilder::stroke(px(1.0));
+            zline.move_to(point(px(x0), px(zero_y)));
+            zline.line_to(point(px(x0 + w), px(zero_y)));
+            if let Ok(path) = zline.build() {
+                window.paint_path(path, zero_line_color);
+            }
+
             if points.is_empty() {
                 return;
             }
             let map_pt = |temp: f64, pct: f64| {
                 let nx = ((temp - min_x) / (max_x - min_x)).clamp(0.0, 1.0) as f32;
-                let ny = (pct / 100.0).clamp(0.0, 1.0) as f32;
+                let ny = ((pct - min_y) / (max_y - min_y)).clamp(0.0, 1.0) as f32;
                 point(px(x0 + w * nx), px(y0 + h * (1.0 - ny)))
             };
 
@@ -374,7 +423,6 @@ pub fn curve_plot_canvas(
                 .map(|p| map_pt(p.temperature, p.speed_percent))
                 .collect();
 
-            // Extend flat ends to 0 and 100 so curve reflects actual interpolation.
             let left_ext = point(px(x0), mapped[0].y);
             let right_ext = point(px(x0 + w), mapped[mapped.len() - 1].y);
 
@@ -408,7 +456,6 @@ pub fn curve_plot_canvas(
                 window.paint_path(path, accent);
             }
 
-            // Live input vertical indicator + intersection dot.
             if let Some((v, interp)) = live_interp {
                 let nx = ((v - min_x) / (max_x - min_x)).clamp(0.0, 1.0) as f32;
                 let lx = x0 + w * nx;
@@ -424,7 +471,6 @@ pub fn curve_plot_canvas(
                 }
             }
 
-            // Control point handles.
             for (idx, p) in mapped.iter().enumerate() {
                 let active = selected_idx == Some(idx);
                 let px_x = f32::from(p.x);
@@ -444,7 +490,55 @@ pub fn curve_plot_canvas(
         },
     )
     .w_full()
-    .h(px(height))
+    .h(px(height));
+
+    let dragging = Rc::new(std::cell::Cell::new(false));
+    let drag_down = dragging.clone();
+    let drag_move = dragging.clone();
+    let drag_up = dragging.clone();
+
+    div()
+        .id("curve-canvas-interactive")
+        .w_full()
+        .h(px(height))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+            cx.stop_propagation();
+            drag_down.set(true);
+            let Some(bounds) = *bounds_down.borrow() else {
+                return;
+            };
+            let (tx, ty) = map_to_data(ev.position, bounds);
+            // Select nearest existing point if close; otherwise move currently selected point.
+            if let Some((best_idx, _)) = points_down
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let dx = (p.temperature - tx) / (max_x - min_x);
+                    let dy = (p.speed_percent - ty) / (max_y - min_y);
+                    (i, (dx * dx + dy * dy).sqrt())
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+            {
+                on_select(best_idx, window, cx);
+                on_drag_down(tx, ty, true, window, cx);
+            }
+        })
+        .on_mouse_move(move |ev, window, cx| {
+            if ev.pressed_button != Some(MouseButton::Left) {
+                drag_move.set(false);
+            } else if drag_move.get() {
+                cx.stop_propagation();
+                if let Some(bounds) = *bounds_move.borrow() {
+                    let (tx, ty) = map_to_data(ev.position, bounds);
+                    on_drag(tx, ty, false, window, cx);
+                }
+            }
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, _| {
+            drag_up.set(false);
+        })
+        .child(plot)
 }
 
 fn build_arc_path(

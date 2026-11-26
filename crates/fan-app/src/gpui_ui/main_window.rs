@@ -16,14 +16,14 @@ use crate::gpui_ui::{
 };
 use crate::i18n::Lang;
 use crate::presenter::{self, FanChoice, Plan, Tone};
-use crate::sensor_list::{GroupFilter, SortOrder};
+use crate::sensor_list::{self, Entry, GroupFilter, SortOrder};
 use crate::status_bar::MenuBarDisplayMode;
-use fan_core::SensorGroup;
+use fan_core::ComfortStatus;
 use gpui::{
-    div, prelude::*, px, AnyElement, BoxShadow, Context, Entity, FontWeight, MouseButton, Point,
-    Render, Window, WindowControlArea,
+    div, prelude::*, px, uniform_list, AnyElement, BoxShadow, Context, Entity, FontWeight,
+    MouseButton, Point, Render, UniformListScrollHandle, Window,
 };
-use gpui_component::Theme;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_kit_assets::IconName;
 
 pub const MAIN_WIDTH: f64 = 860.0;
@@ -31,16 +31,40 @@ pub const MAIN_HEIGHT: f64 = 640.0;
 
 pub struct MainWindowView {
     pub state: Entity<AppState>,
+    pub search_input: Entity<InputState>,
+    pub sensor_scroll: UniformListScrollHandle,
 }
 
 impl MainWindowView {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         cx.observe_window_appearance(window, |_, window, cx| {
-            Theme::sync_system_appearance(Some(window), cx);
+            glass::sync_glass_root_theme(window, cx);
         })
         .detach();
-        Self { state }
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::translate("搜索传感器名称或键名…"))
+        });
+        let state_search = state.clone();
+        cx.subscribe_in(
+            &search_input,
+            window,
+            move |_this, input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let query = input.read(cx).value().to_string();
+                    state_search.update(cx, |s, cx| {
+                        s.sensor_query = query;
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+        Self {
+            state,
+            search_input,
+            sensor_scroll: UniformListScrollHandle::new(),
+        }
     }
 }
 
@@ -53,6 +77,11 @@ impl Render for MainWindowView {
         let can_fwd = !st.forward_stack.is_empty();
         let view = st.presentation();
         let curve_modal = st.curve_editor.clone();
+        let curve_sources = if curve_modal.is_some() {
+            st.curve_sources()
+        } else {
+            Vec::new()
+        };
         let live_curve_input = curve_modal.as_ref().and_then(|d| {
             if st.is_fresh() {
                 st.snapshot
@@ -77,7 +106,6 @@ impl Render for MainWindowView {
             .px(px(24.0))
             .pt(px(14.0))
             .pb(px(10.0))
-            .window_control_area(WindowControlArea::Drag)
             .child(nav_capsule(
                 &theme,
                 can_back,
@@ -91,11 +119,22 @@ impl Render for MainWindowView {
             ))
             .child(
                 div()
-                    .text_size(px(16.5))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_primary)
-                    .whitespace_nowrap()
-                    .child(t(section.title())),
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        window.start_window_move();
+                    })
+                    .child(
+                        div()
+                            .text_size(px(16.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary)
+                            .whitespace_nowrap()
+                            .child(t(section.title())),
+                    ),
             );
 
         let page_content: AnyElement = match section {
@@ -104,6 +143,49 @@ impl Render for MainWindowView {
             Section::Smart => self.render_smart(&theme, cx).into_any_element(),
             Section::Details => self.render_details(&theme, cx).into_any_element(),
             Section::Settings => self.render_settings(&theme, cx).into_any_element(),
+        };
+
+        let detail_body: AnyElement = if section == Section::Details {
+            // Details page hosts a virtualized `uniform_list`, so it owns its own scroll viewport.
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .px(px(24.0))
+                .pb(px(20.0))
+                .pt(px(4.0))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .max_w(px(740.0))
+                        .mx_auto()
+                        .flex()
+                        .flex_col()
+                        .child(page_content),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id("detail-scroll")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scroll()
+                .px(px(24.0))
+                .pb(px(24.0))
+                .pt(px(4.0))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(740.0))
+                        .mx_auto()
+                        .child(page_content),
+                )
+                .into_any_element()
         };
 
         let detail_pane = div()
@@ -116,31 +198,27 @@ impl Render for MainWindowView {
             .flex_col()
             .overflow_hidden()
             .child(header)
-            .child(
-                div()
-                    .id("detail-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .overflow_y_scroll()
-                    .px(px(24.0))
-                    .pb(px(24.0))
-                    .pt(px(4.0))
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(740.0))
-                            .mx_auto()
-                            .child(page_content),
-                    ),
-            );
+            .child(detail_body);
 
+        let state_esc = self.state.clone();
         div()
             .relative()
             .size_full()
             .flex()
             .flex_row()
             .overflow_hidden()
+            .on_key_down(move |ev, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    state_esc.update(cx, |s, cx| {
+                        if s.curve_editor.is_some() {
+                            s.close_curve_editor(cx);
+                        } else if s.language_menu_open {
+                            s.language_menu_open = false;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .child(sidebar)
             .child(div().w(px(1.0)).h_full().bg(theme.sidebar_border))
             .child(detail_pane)
@@ -150,6 +228,7 @@ impl Render for MainWindowView {
                     &self.state,
                     &draft,
                     live_curve_input,
+                    &curve_sources,
                 ))
             })
     }
@@ -304,13 +383,12 @@ impl MainWindowView {
             .flex_col()
             .pb(px(14.0))
             .gap(px(10.0))
-            .child(
-                div()
-                    .h(px(42.0))
-                    .w_full()
-                    .flex_shrink_0()
-                    .window_control_area(WindowControlArea::Drag),
-            )
+            .child(div().h(px(42.0)).w_full().flex_shrink_0().on_mouse_down(
+                MouseButton::Left,
+                |_, window, _| {
+                    window.start_window_move();
+                },
+            ))
             .child(hero_card)
             .child(nav_list)
             .child(div().flex_1().min_h_0())
@@ -328,7 +406,7 @@ impl MainWindowView {
         let smart = st.smart_status();
         let custom_pct = st
             .pending_speed
-            .map(|(p, _)| p)
+            .map(|p| p.percent)
             .unwrap_or(view.custom_percent);
 
         // Hero status card (Rex Server style)
@@ -572,7 +650,11 @@ impl MainWindowView {
         // Battery / Power telemetry card (if present)
         let power_card: Option<AnyElement> = st.snapshot.battery.as_ref().map(|bat| {
             let (headline, lines) = presenter::battery_lines(bat);
-            let sub = lines.join(" · ");
+            let sub = lines
+                .iter()
+                .map(|line| crate::i18n::translate(line))
+                .collect::<Vec<_>>()
+                .join(" · ");
             glass_card(theme)
                 .child(settings_row(
                     theme,
@@ -606,7 +688,8 @@ impl MainWindowView {
     fn render_fans(&self, theme: &GlassTheme, cx: &mut Context<Self>) -> impl IntoElement {
         let st = self.state.read(cx);
         let cards = st.fan_cards();
-        let editable = !st.demo && st.snapshot.helper_ready && !st.snapshot.installing;
+        let editable = st.fan_writes_allowed();
+        let can_handback = !st.demo && st.snapshot.helper_ready && !st.snapshot.installing;
 
         let mut list = div().flex().flex_col().gap(px(12.0));
         if cards.is_empty() {
@@ -634,11 +717,12 @@ impl MainWindowView {
             let live_pct = st
                 .pending_fan_speeds
                 .get(&fan_id)
-                .map(|(p, _)| *p)
+                .map(|p| p.percent)
                 .unwrap_or(card.fixed_percent);
             let hint = presenter::rpm_hint(live_pct, card.range);
 
             let state_choice = self.state.clone();
+            // Concise labels guarantee zero horizontal overflow at 720pt min width in both zh and en.
             let mode_seg = glass_segmented(
                 match fan_id {
                     0 => "fan-mode-0",
@@ -646,9 +730,9 @@ impl MainWindowView {
                     2 => "fan-mode-2",
                     _ => "fan-mode-n",
                 },
-                &["系统自动", "智能散热", "固定速度", "温度曲线"],
+                &["自动", "智能", "固定", "曲线"],
                 selected_idx,
-                editable,
+                editable || can_handback,
                 true,
                 theme,
                 move |idx, _, cx| {
@@ -788,7 +872,8 @@ impl MainWindowView {
         let st = self.state.read(cx);
         let smart = st.smart_status();
         let bias = st.current_bias();
-        let saving = st.pending_policy_save.is_some() || st.snapshot.installing;
+        let saving =
+            !st.policy_loaded || st.pending_policy_save.is_some() || st.snapshot.installing;
         let pref_notice = st.preference_notice.clone();
         let pref_err = st.preference_notice_is_error;
         let policy = st.policy.clone();
@@ -938,7 +1023,21 @@ impl MainWindowView {
                 )
             });
 
-        // Collapsible Comfort Target card
+        // Collapsible Comfort Target & Two-Point External Calibration card
+        let comfort_status = st.snapshot.thermal.adaptive.comfort_status;
+        let has_saved_cal = st.snapshot.config.thermal_policy.calibration.is_some();
+        let body_sensors = st.body_sensors();
+        let (comfort_badge_tone, comfort_badge_text) = match comfort_status {
+            ComfortStatus::Active => (Tone::Good, "已校准生效"),
+            ComfortStatus::AboveCalibrationRange => (Tone::Warning, "高于校准上限（保守散热）"),
+            ComfortStatus::BelowCalibrationRange => (Tone::Info, "低于校准下限"),
+            ComfortStatus::OutOfRange => (Tone::Warning, "超出校准范围"),
+            ComfortStatus::MachineMismatch => (Tone::Warning, "机型不匹配"),
+            ComfortStatus::MissingSensor => (Tone::Warning, "参考传感器缺失"),
+            ComfortStatus::Uncalibrated => (Tone::Info, "未校准"),
+            ComfortStatus::NotRequested => (Tone::Info, "未启用"),
+        };
+
         let state_disc = self.state.clone();
         let state_comfort_toggle = self.state.clone();
         let state_c_minus = self.state.clone();
@@ -947,11 +1046,7 @@ impl MainWindowView {
         let mut comfort_card = glass_card(theme).child(chevron_row(
             "smart-cal-toggle",
             "键盘体感目标与两点校准",
-            Some(if policy.comfort_enabled {
-                "已启用"
-            } else {
-                "默认 38°C"
-            }),
+            Some(comfort_badge_text),
             theme,
             move |_, cx| {
                 state_disc.update(cx, |s, cx| {
@@ -962,20 +1057,53 @@ impl MainWindowView {
         ));
 
         if policy.calibration_open {
+            let cur_idx = body_sensors
+                .iter()
+                .position(|(k, _, _)| *k == policy.cal_sensor_key)
+                .unwrap_or(0);
+            let cur_sensor_label = body_sensors
+                .get(cur_idx)
+                .map(|(k, name, val)| {
+                    let v = val
+                        .map(|v| format!(" · {v:.1}°C"))
+                        .unwrap_or_else(|| " · —".into());
+                    format!("{} ({k}){v}", crate::i18n::translate(name))
+                })
+                .unwrap_or_else(|| crate::i18n::translate("未检测到机身传感器"));
+            let next_sensor_key = body_sensors
+                .get((cur_idx + 1) % body_sensors.len().max(1))
+                .map(|(k, _, _)| k.clone())
+                .unwrap_or_default();
+
+            let state_sensor = self.state.clone();
+            let state_apply_cal = self.state.clone();
+            let state_clear_cal = self.state.clone();
+            let both_captured =
+                policy.cal_captured[0].is_some() && policy.cal_captured[1].is_some();
+
             comfort_card = comfort_card
                 .child(div().px(px(16.0)).child(hairline(theme)))
                 .child(settings_row(
                     theme,
+                    "当前体感校准状态",
+                    Some("内部传感器不代表键盘表面实测，需同设备两点外部校准且在范围内生效。"),
+                    status_badge(theme, comfort_badge_tone, comfort_badge_text),
+                ))
+                .child(div().px(px(16.0)).child(hairline(theme)))
+                .child(settings_row(
+                    theme,
                     "启用体感温度目标",
-                    Some("需同设备外部两点校准且处于有效范围时生效。"),
+                    None,
                     glass_toggle(
                         "comfort-enabled",
+                        "启用体感温度目标",
                         policy.comfort_enabled,
                         !saving,
                         theme,
                         move |checked, _, cx| {
                             state_comfort_toggle.update(cx, |s, cx| {
                                 s.policy.comfort_enabled = checked;
+                                s.policy.dirty = true;
                                 cx.notify();
                             });
                         },
@@ -985,7 +1113,7 @@ impl MainWindowView {
                 .child(settings_row(
                     theme,
                     "体感目标温度",
-                    Some("默认 38°C，超过校准上限时自动保持保守散热下界。"),
+                    Some("默认 38°C（30–45°C），超过校准上限时自动保持保守散热下界。"),
                     div()
                         .flex()
                         .flex_row()
@@ -995,12 +1123,13 @@ impl MainWindowView {
                             "comfort-minus",
                             "−",
                             ButtonStyle::Secondary,
-                            !saving && policy.comfort_target_c > 32.0,
+                            !saving && policy.comfort_target_c > 30.0,
                             theme,
                             move |_, cx| {
                                 state_c_minus.update(cx, |s, cx| {
                                     s.policy.comfort_target_c =
-                                        (s.policy.comfort_target_c - 1.0).clamp(32.0, 46.0);
+                                        (s.policy.comfort_target_c - 1.0).clamp(30.0, 45.0);
+                                    s.policy.dirty = true;
                                     cx.notify();
                                 });
                             },
@@ -1018,24 +1147,151 @@ impl MainWindowView {
                             "comfort-plus",
                             "+",
                             ButtonStyle::Secondary,
-                            !saving && policy.comfort_target_c < 46.0,
+                            !saving && policy.comfort_target_c < 45.0,
                             theme,
                             move |_, cx| {
                                 state_c_plus.update(cx, |s, cx| {
                                     s.policy.comfort_target_c =
-                                        (s.policy.comfort_target_c + 1.0).clamp(32.0, 46.0);
+                                        (s.policy.comfort_target_c + 1.0).clamp(30.0, 45.0);
+                                    s.policy.dirty = true;
                                     cx.notify();
                                 });
                             },
                         ))
                         .child(pill_button(
                             "comfort-save",
-                            "保存",
+                            "保存目标",
                             ButtonStyle::Primary,
                             !saving,
                             theme,
                             move |_, cx| {
                                 state_save_policy.update(cx, |s, cx| s.save_thermal_policy(cx));
+                            },
+                        )),
+                ))
+                .child(div().px(px(16.0)).child(hairline(theme)))
+                .child(settings_row(
+                    theme,
+                    "参考机身传感器",
+                    Some("选择靠近键盘区域的机身内部传感器。"),
+                    inline_picker_trigger(
+                        "cal-sensor-cycle",
+                        &cur_sensor_label,
+                        body_sensors.len() > 1,
+                        theme,
+                        move |_, cx| {
+                            let next_key = next_sensor_key.clone();
+                            state_sensor.update(cx, |s, cx| {
+                                s.select_calibration_sensor(next_key, cx);
+                            });
+                        },
+                    ),
+                ));
+
+            for idx in 0..2 {
+                let state_m = self.state.clone();
+                let state_p = self.state.clone();
+                let state_rec = self.state.clone();
+                let pt_title = if idx == 0 {
+                    "校准点 1（偏凉状态）"
+                } else {
+                    "校准点 2（偏热状态）"
+                };
+                let captured_sub = match policy.cal_captured[idx] {
+                    Some((internal, ext)) => {
+                        format!("已记录：内部 {internal:.1}°C → 表面 {ext:.1}°C")
+                    }
+                    None => "请用红外/接触式温度计实测键盘表面后点击记录。".into(),
+                };
+                comfort_card = comfort_card
+                    .child(div().px(px(16.0)).child(hairline(theme)))
+                    .child(settings_row(
+                        theme,
+                        pt_title,
+                        Some(&captured_sub),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(pill_button(
+                                ("cal-ext-m", idx),
+                                "−",
+                                ButtonStyle::Secondary,
+                                !saving && policy.cal_ext_c[idx] > 15.0,
+                                theme,
+                                move |_, cx| {
+                                    state_m.update(cx, |s, cx| {
+                                        s.adjust_calibration_ext(idx, -0.5, cx);
+                                    });
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .w(px(50.0))
+                                    .text_center()
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_primary)
+                                    .child(format!("{:.1}°C", policy.cal_ext_c[idx])),
+                            )
+                            .child(pill_button(
+                                ("cal-ext-p", idx),
+                                "+",
+                                ButtonStyle::Secondary,
+                                !saving && policy.cal_ext_c[idx] < 60.0,
+                                theme,
+                                move |_, cx| {
+                                    state_p.update(cx, |s, cx| {
+                                        s.adjust_calibration_ext(idx, 0.5, cx);
+                                    });
+                                },
+                            ))
+                            .child(pill_button(
+                                ("cal-record", idx),
+                                "记录",
+                                ButtonStyle::Secondary,
+                                !saving && !body_sensors.is_empty(),
+                                theme,
+                                move |_, cx| {
+                                    state_rec
+                                        .update(cx, |s, cx| s.record_calibration_point(idx, cx));
+                                },
+                            )),
+                    ));
+            }
+
+            comfort_card = comfort_card
+                .child(div().px(px(16.0)).child(hairline(theme)))
+                .child(settings_row(
+                    theme,
+                    "两点校准操作",
+                    Some("两点温差需至少 3°C，并绑定当前机型标识。"),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .when(has_saved_cal, |this| {
+                            this.child(pill_button(
+                                "cal-clear",
+                                "清除校准",
+                                ButtonStyle::DangerSoft,
+                                !saving,
+                                theme,
+                                move |_, cx| {
+                                    state_clear_cal.update(cx, |s, cx| s.clear_calibration(cx));
+                                },
+                            ))
+                        })
+                        .child(pill_button(
+                            "cal-apply",
+                            "应用校准",
+                            ButtonStyle::Primary,
+                            !saving && both_captured,
+                            theme,
+                            move |_, cx| {
+                                state_apply_cal.update(cx, |s, cx| s.apply_calibration(cx));
                             },
                         )),
                 ))
@@ -1071,13 +1327,14 @@ impl MainWindowView {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Section 4: 温度详情 (Sensor Telemetry Table with Group Filter & Sort)
+    // Section 4: 温度详情 (Virtualized Sensor List with Search, Group Filter & Sort)
     // ──────────────────────────────────────────────────────────────────────────
     fn render_details(&self, theme: &GlassTheme, cx: &mut Context<Self>) -> impl IntoElement {
         let st = self.state.read(cx);
         let fresh = st.is_fresh();
         let group_filter = st.sensor_group;
         let sort_order = st.sensor_sort;
+        let query = st.sensor_query.clone();
 
         let state_grp = self.state.clone();
         let group_seg = glass_segmented(
@@ -1115,138 +1372,163 @@ impl MainWindowView {
             },
         );
 
-        let mut sensors: Vec<_> = st
-            .snapshot
-            .snapshot
-            .sensors
-            .iter()
-            .filter(|s| match group_filter {
-                GroupFilter::All => true,
-                GroupFilter::Cpu => s.group == SensorGroup::Cpu,
-                GroupFilter::Gpu => s.group == SensorGroup::Gpu,
-                GroupFilter::System => s.group == SensorGroup::System,
-                GroupFilter::Other => s.group == SensorGroup::Other,
-            })
-            .cloned()
-            .collect();
+        let rows = sensor_list::entries(
+            &st.snapshot.snapshot.sensors,
+            &query,
+            group_filter,
+            sort_order,
+            fresh,
+        );
+        let row_count = rows.len();
+        let theme_copy = *theme;
 
-        if sort_order == SortOrder::HottestFirst {
-            sensors.sort_by(|a, b| b.value.unwrap_or(-1.0).total_cmp(&a.value.unwrap_or(-1.0)));
-        } else {
-            let rank = |g: SensorGroup| match g {
-                SensorGroup::Cpu => 0u8,
-                SensorGroup::Gpu => 1,
-                SensorGroup::System => 2,
-                SensorGroup::Other => 3,
-            };
-            sensors.sort_by(|a, b| rank(a.group).cmp(&rank(b.group)).then(a.name.cmp(&b.name)));
-        }
+        let search_bar = div().flex_shrink_0().w_full().child(
+            Input::new(&self.search_input)
+                .cleanable(true)
+                .aria_label(t("搜索传感器"))
+                .prefix(vector_icon(IconName::Search, 14.0, theme.text_muted)),
+        );
 
-        let mut rows: Vec<AnyElement> = Vec::new();
-        for sensor in sensors.into_iter().take(180) {
-            let val_opt = fresh.then_some(sensor.value).flatten();
-            let val_text = val_opt
-                .map(|v| format!("{v:.1}°C"))
-                .unwrap_or_else(|| "—".into());
-            let tone = val_opt
-                .map(presenter::temperature_level)
-                .unwrap_or(Tone::Info);
-            let (fg, _) = theme.tone_colors(tone);
-            let ratio = val_opt
-                .map(|v| ((v - 20.0) / 85.0).clamp(0.0, 1.0) as f32)
-                .unwrap_or(0.0);
-
-            rows.push(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.0))
-                    .px(px(16.0))
-                    .py(px(9.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
+        let virtual_list = uniform_list(
+            "sensor-virtual-list",
+            row_count,
+            move |range, _window, _cx| {
+                range
+                    .map(|idx| match &rows[idx] {
+                        Entry::Header(title) => div()
+                            .w_full()
+                            .h(px(46.0))
+                            .px(px(16.0))
                             .flex()
-                            .flex_col()
-                            .gap(px(1.0))
+                            .items_end()
+                            .pb(px(6.0))
+                            .border_b_1()
+                            .border_color(theme_copy.hairline)
                             .child(
                                 div()
-                                    .text_size(px(12.5))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text_primary)
-                                    .truncate()
-                                    .child(sensor.name),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(theme.text_muted)
-                                    .truncate()
-                                    .child(sensor.key),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(10.0))
-                            .child(
-                                div()
-                                    .w(px(88.0))
-                                    .h(px(5.0))
-                                    .rounded_full()
-                                    .bg(theme.slider_track)
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .h_full()
-                                            .w(gpui::relative(ratio))
-                                            .rounded_full()
-                                            .bg(fg),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .w(px(56.0))
-                                    .text_right()
-                                    .text_size(px(12.5))
+                                    .text_size(px(11.5))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if val_opt.is_some() {
-                                        theme.text_primary
+                                    .text_color(theme_copy.text_secondary)
+                                    .child(t(title)),
+                            )
+                            .into_any_element(),
+                        Entry::Reading(sensor) => {
+                            let val_opt = sensor.value;
+                            let is_headroom = sensor_list::is_headroom(sensor);
+                            let val_text = val_opt
+                                .map(|v| {
+                                    if is_headroom {
+                                        format!("Δ {v:.1}°C")
                                     } else {
-                                        theme.text_muted
-                                    })
-                                    .child(val_text),
-                            ),
-                    )
-                    .into_any_element(),
-            );
-        }
+                                        format!("{v:.1}°C")
+                                    }
+                                })
+                                .unwrap_or_else(|| "—".into());
+                            let tone = if is_headroom {
+                                Tone::Info
+                            } else {
+                                val_opt
+                                    .map(presenter::temperature_level)
+                                    .unwrap_or(Tone::Info)
+                            };
+                            let (fg, _) = theme_copy.tone_colors(tone);
+                            let ratio = val_opt
+                                .map(|v| ((v - 20.0) / 85.0).clamp(0.0, 1.0) as f32)
+                                .unwrap_or(0.0);
 
-        if rows.is_empty() {
-            rows.push(
-                div()
-                    .p(px(20.0))
-                    .text_size(px(12.5))
-                    .text_color(theme.text_secondary)
-                    .child(t("没有匹配的传感器读数。"))
-                    .into_any_element(),
-            );
-        }
+                            div()
+                                .w_full()
+                                .h(px(46.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.0))
+                                .px(px(16.0))
+                                .border_b_1()
+                                .border_color(theme_copy.hairline)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(1.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme_copy.text_primary)
+                                                .truncate()
+                                                .child(t(&sensor.name)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.5))
+                                                .text_color(theme_copy.text_muted)
+                                                .truncate()
+                                                .child(sensor.key.clone()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(10.0))
+                                        .child(
+                                            div()
+                                                .w(px(88.0))
+                                                .h(px(5.0))
+                                                .rounded_full()
+                                                .bg(theme_copy.slider_track)
+                                                .overflow_hidden()
+                                                .child(
+                                                    div()
+                                                        .h_full()
+                                                        .w(gpui::relative(ratio))
+                                                        .rounded_full()
+                                                        .bg(fg),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(64.0))
+                                                .text_right()
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(if val_opt.is_some() {
+                                                    theme_copy.text_primary
+                                                } else {
+                                                    theme_copy.text_muted
+                                                })
+                                                .child(val_text),
+                                        ),
+                                )
+                                .into_any_element()
+                        }
+                    })
+                    .collect()
+            },
+        )
+        .track_scroll(&self.sensor_scroll)
+        .flex_1()
+        .min_h_0()
+        .w_full();
 
         div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
             .flex_col()
-            .gap(px(12.0))
+            .gap(px(10.0))
+            .child(search_bar)
             .child(
                 div()
+                    .flex_shrink_0()
                     .w_full()
                     .flex()
                     .flex_row()
@@ -1257,7 +1539,13 @@ impl MainWindowView {
                     .child(group_seg)
                     .child(sort_seg),
             )
-            .child(card_rows(theme, rows))
+            .child(
+                glass_card(theme)
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(virtual_list),
+            )
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -1330,6 +1618,7 @@ impl MainWindowView {
             None,
             glass_toggle(
                 "settings-login",
+                "登录时启动",
                 login_on,
                 !demo,
                 theme,
@@ -1508,7 +1797,14 @@ impl MainWindowView {
                 !demo,
                 theme,
                 move |_, cx| {
-                    state_uninstall.update(cx, |s, cx| s.request_uninstall(cx));
+                    // Run native confirmation modal via `cx.defer` outside any `Entity::update`
+                    // borrow so GPUI callbacks during the modal run loop can never panic.
+                    let state_uninstall = state_uninstall.clone();
+                    cx.defer(move |cx| {
+                        if glass::confirm_uninstall_dialog() {
+                            state_uninstall.update(cx, |s, cx| s.send_uninstall(cx));
+                        }
+                    });
                 },
             ),
         );
@@ -1526,6 +1822,7 @@ impl MainWindowView {
         let state_update = self.state.clone();
         let state_export = self.state.clone();
         let version_str = format!("{} ({})", version.version, version.build);
+        let worker_msg = st.snapshot.message.clone();
 
         let update_row = settings_row(
             theme,
@@ -1559,7 +1856,13 @@ impl MainWindowView {
             Some("导出…"),
             theme,
             move |_, cx| {
-                state_export.update(cx, |s, _| s.export_diagnostics());
+                // Run NSSavePanel outside `Entity::update` to prevent re-entrancy panics.
+                let state_export = state_export.clone();
+                cx.defer(move |cx| {
+                    if let Some(path) = glass::save_diagnostics_dialog() {
+                        state_export.update(cx, |s, cx| s.send_export(path, cx));
+                    }
+                });
             },
         );
         let help_row = chevron_row("settings-help", "使用帮助", None, theme, |_, _| {
@@ -1593,7 +1896,7 @@ impl MainWindowView {
             .child(general_card)
             .child(info_footnote(
                 theme,
-                "开机后自动在菜单栏运行；切换界面语言需重新打开应用生效。",
+                "开机后自动在菜单栏运行；切换界面语言后界面文字会立即更新。",
             ))
             .when(!msg.is_empty(), |this| {
                 this.child(
@@ -1627,5 +1930,8 @@ impl MainWindowView {
             .child(div().h(px(6.0)))
             .child(section_title(theme, "支持与关于"))
             .child(support_card)
+            .when(!worker_msg.is_empty(), |this| {
+                this.child(info_footnote(theme, &worker_msg))
+            })
     }
 }

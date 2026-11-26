@@ -65,6 +65,13 @@ fn raw_ns_window(window: &gpui::Window) -> Option<*mut AnyObject> {
     raw_ns_handles(window).map(|(_, w)| w)
 }
 
+/// Syncs GPUI Kit's theme with macOS appearance while keeping the Root surface fully
+/// transparent so `NSGlassEffectView` / `NSVisualEffectView` Liquid Glass shines through.
+pub fn sync_glass_root_theme(window: &mut gpui::Window, cx: &mut gpui::App) {
+    gpui_component::Theme::sync_system_appearance(Some(window), cx);
+    gpui_component::Theme::global_mut(cx).tokens.background = gpui::transparent_black().into();
+}
+
 /// Attaches a real macOS 26+ `NSGlassEffectView` (or `NSVisualEffectView` on macOS 14–15)
 /// behind GPUI's transparent Metal hosting view so the window gets true live Liquid Glass
 /// refraction and adaptive luminosity.
@@ -77,16 +84,20 @@ pub fn attach_liquid_glass(window: &gpui::Window, corner_radius: f64, style: Gla
         if content_view.is_null() {
             return;
         }
+        // Only mount relative to `ns_view` when it is still a direct subview of `content_view`.
+        let superview: *mut AnyObject = msg_send![ns_view, superview];
+        let relative_to = if superview == content_view {
+            ns_view
+        } else {
+            std::ptr::null_mut()
+        };
+
         let _: () = msg_send![ns_window, setOpaque: false];
         let _: () = msg_send![ns_window, setHasShadow: true];
 
         let bounds: NSRect = msg_send![content_view, bounds];
         let mask: usize = 2 | 16; // NSViewWidthSizable | NSViewHeightSizable
         let below: isize = -1; // NSWindowBelow
-
-        // Keep GPUI's Metal view synchronized with content_view bounds after any styleMask change.
-        let _: () = msg_send![ns_view, setFrame: bounds];
-        let _: () = msg_send![ns_view, setAutoresizingMask: mask];
 
         if let Some(glass_class) = AnyClass::get(c"NSGlassEffectView") {
             let alloc: *mut AnyObject = msg_send![glass_class, alloc];
@@ -105,7 +116,7 @@ pub fn attach_liquid_glass(window: &gpui::Window, corner_radius: f64, style: Gla
                     content_view,
                     addSubview: glass,
                     positioned: below,
-                    relativeTo: ns_view
+                    relativeTo: relative_to
                 ];
                 let _: () = msg_send![glass, release];
             }
@@ -136,7 +147,7 @@ pub fn attach_liquid_glass(window: &gpui::Window, corner_radius: f64, style: Gla
                     content_view,
                     addSubview: vev,
                     positioned: below,
-                    relativeTo: ns_view
+                    relativeTo: relative_to
                 ];
                 let _: () = msg_send![vev, release];
             }
@@ -144,8 +155,8 @@ pub fn attach_liquid_glass(window: &gpui::Window, corner_radius: f64, style: Gla
     }
 }
 
-/// Configures a GPUI popup window as a borderless Liquid Glass floating menu-bar panel
-/// positioned cleanly beneath the given `NSStatusItem` button screen rect.
+/// Configures a GPUI `WindowKind::PopUp` panel as a Liquid Glass floating menu-bar panel
+/// without mutating `styleMask` after GPUI initializes `GPUIPanel` / `GPUIView`.
 pub fn configure_popover_window(
     window: &gpui::Window,
     anchor_rect: Option<NSRect>,
@@ -154,12 +165,8 @@ pub fn configure_popover_window(
 ) {
     if let Some(ns_window) = raw_ns_window(window) {
         unsafe {
-            // Strip NSWindowStyleMask::Titled so the popup has zero titlebar chrome or double
-            // corner masks; keep NonactivatingPanel (1 << 7) so it floats smoothly over any app.
-            let mask: usize = 1 << 7; // NSWindowStyleMask::Borderless | NonactivatingPanel
-            let _: () = msg_send![ns_window, setStyleMask: mask];
-            let clear = NSColor::clearColor();
-            let _: () = msg_send![ns_window, setBackgroundColor: &*clear];
+            // Keep GPUI's initialized `GPUIPanel` styleMask intact so AppKit never rebuilds
+            // the contentView hierarchy or breaks GPUIView / CAMetalLayer tracking.
             let _: () = msg_send![ns_window, setOpaque: false];
             let _: () = msg_send![ns_window, setHasShadow: true];
             // NSStatusWindowLevel (25) keeps the panel directly attached to the menu bar.
@@ -175,7 +182,8 @@ pub fn configure_popover_window(
             }
         }
     }
-    attach_liquid_glass(window, 18.0, GlassStyle::Regular);
+    // Let the native panel mask clip corners cleanly (0.0 avoids mismatched double corners).
+    attach_liquid_glass(window, 0.0, GlassStyle::Regular);
 }
 
 /// Updates the floating menu bar panel's position and height while keeping its top edge anchored.
@@ -245,6 +253,16 @@ pub fn status_item_screen_rect(item: &NSStatusItem) -> Option<NSRect> {
     let window = button.window()?;
     let frame_in_window = button.convertRect_toView(button.bounds(), None);
     Some(window.convertRectToScreen(frame_in_window))
+}
+
+/// Returns whether the current global cursor position lies inside the given status item rect.
+pub fn cursor_inside_rect(rect: NSRect) -> bool {
+    let pt = NSEvent::mouseLocation();
+    let pad = 4.0;
+    pt.x >= rect.origin.x - pad
+        && pt.x <= rect.origin.x + rect.size.width + pad
+        && pt.y >= rect.origin.y - pad
+        && pt.y <= rect.origin.y + rect.size.height + pad
 }
 
 /// Forces a GPUI window's native macOS appearance (for light/dark diagnostic renders).

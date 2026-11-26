@@ -331,15 +331,17 @@ pub fn nav_capsule(
         .child(fwd)
 }
 
-/// Spring-animated GPUI Kit Switch with VoiceOver accessibility support.
+/// Spring-animated GPUI Kit Switch with VoiceOver accessibility label.
 pub fn glass_toggle(
     id: impl Into<ElementId>,
+    accessibility_title: &str,
     checked: bool,
     enabled: bool,
     theme: &GlassTheme,
     on_toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
 ) -> Switch {
     Switch::new(id)
+        .accessibility_label(t(accessibility_title))
         .checked(checked)
         .disabled(!enabled)
         .color(theme.accent)
@@ -361,6 +363,7 @@ pub fn glass_segmented(
     let mut track = div()
         .flex()
         .flex_row()
+        .flex_wrap()
         .items_center()
         .p(px(2.5))
         .gap(px(2.0))
@@ -383,6 +386,12 @@ pub fn glass_segmented(
             .px(px(if full_width { 8.0 } else { 11.0 }))
             .py(px(4.5))
             .rounded_full()
+            .border_1()
+            .border_color(if is_active {
+                theme.segment_active_border
+            } else {
+                rgba(0x00000000).into()
+            })
             .text_size(px(12.0))
             .whitespace_nowrap()
             .font_weight(if is_active {
@@ -403,27 +412,23 @@ pub fn glass_segmented(
             seg = seg.flex_shrink_0();
         }
         if is_active {
-            seg = seg
-                .bg(theme.segment_active)
-                .border_1()
-                .border_color(theme.segment_active_border)
-                .shadow(vec![BoxShadow {
-                    color: theme.shadow,
-                    offset: Point::new(px(0.0), px(1.0)),
-                    blur_radius: px(3.0),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }]);
+            seg = seg.bg(theme.segment_active).shadow(vec![BoxShadow {
+                color: theme.shadow,
+                offset: Point::new(px(0.0), px(1.0)),
+                blur_radius: px(3.0),
+                spread_radius: px(0.0),
+                inset: false,
+            }]);
         }
-        if enabled {
+        if enabled && !is_active {
             let hover = theme.sidebar_hover_pill;
             seg = seg
                 .cursor_pointer()
-                .when(!is_active, move |s| s.hover(move |h| h.bg(hover)))
+                .hover(move |h| h.bg(hover))
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     cb(idx, window, cx);
                 });
-        } else {
+        } else if !enabled {
             seg = seg.opacity(0.48);
         }
         track = track.child(seg);
@@ -671,14 +676,31 @@ pub fn step_slider(
         .justify_between()
         .px(px(6.0));
 
+    let dragging = std::rc::Rc::new(std::cell::Cell::new(false));
     for (idx, &value) in steps.iter().enumerate() {
-        let cb = on_select.clone();
+        let cb_down = on_select.clone();
+        let cb_move = on_select.clone();
+        let drag_down = dragging.clone();
+        let drag_move = dragging.clone();
+        let drag_up = dragging.clone();
         let mut cell = div().id((id_prefix, idx)).flex_1().h_full();
         if enabled {
             cell = cell
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    cb(value, window, cx);
+                    cx.stop_propagation();
+                    drag_down.set(true);
+                    cb_down(value, window, cx);
+                })
+                .on_mouse_move(move |ev, window, cx| {
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        drag_move.set(false);
+                    } else if drag_move.get() && value != current {
+                        cb_move(value, window, cx);
+                    }
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    drag_up.set(false);
                 });
         }
         hit_cells = hit_cells.child(cell);

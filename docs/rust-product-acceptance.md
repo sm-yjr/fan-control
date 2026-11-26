@@ -6,6 +6,12 @@
 
 ## 迁移范围
 
+### 2026-11-26：0.7.2 GPUI 全面质量修复与功能补全
+
+本次在 `main` 分支依据独立代码审计修复 `0.7.1` 的多项高优先级缺陷：前端控制引入全局 `control_epoch` 与按风扇独立的 `fan_epochs` 防止重置/切模式后延迟滑块回写覆盖，统一写前新鲜度校验并显式反馈通道发送错误，曲线编辑器遮罩补齐 `.occlude()` 与事件阻断；同步外观后将 GPUI Kit `Root` 背景置透明让 `NSGlassEffectView` / `NSVisualEffectView` 真正透出，移除 `PopUp` 窗口创建后的 `setStyleMask:` 修改，补齐 `⌘Q` / 延后 `⌘W` / 全局 `Escape`、`window.start_window_move()` 原生拖动及非重入系统对话框；恢复曲线控制源/迟滞/`-20%` 停转/画布拖拽、同机外部两点键盘校准（含冷启动保护与跨机型隔离）、真实时间轴趋势图、虚拟化传感器搜索与分组显示、浮窗曲线保护、拖拽起点守卫、VoiceOver 开关标签与完整中英文翻译，并收紧 `fan-licenses` 显式固定包哈希/许可证校验。
+
+底层 `fan-core` 算法、SMC 读写、helper 协议 9、租约与睡眠恢复路径均未改动。本地与 CI 验证覆盖 rustfmt、Clippy（零警告）、全部 Rust 工作区测试（含 Rust 1.98.0 MSRV）、中英文 `--ui-smoke`（含 `Root` 透明断言、多次菜单栏浮窗开关与主窗口关闭重开）、Widget 单元测试、Developer ID 由内到外签名、独立 helper `otool -L` 隔离与 Sparkle 运行时检查。用户明确授权按本地预构建路线发布 `v0.7.2`；真实桌面深浅色与 Liquid Glass 实机观感、VoiceOver 实操、真实硬件写入回读及旧版自动更新实测继续保留未验证状态，不计为通过。
+
 ### 2026-11-26：0.7.1 菜单栏闪退与 GPUI 前端布局修复
 
 本次在 `main` 分支修复 `0.7.0` 暴露的两类问题：其一是 `gpui_ui/mod.rs` 中 `toggle_popover` 与 `open_or_show_main` 在 `if let` 作用域内跨 `cx.update_window` 持有 `RefCell` 借用导致二次点击菜单栏图标或关闭后重开主窗口触发 `BorrowMutError` panic，同时消除 `PopoverView` 按钮回调实体重入、补齐点击外部自动收起与防抖、多屏定位、无边框纯玻璃 `PopUp` 样式及 30ms 点击响应 / 500ms 采样节流；其二是重构菜单栏浮窗为固定顶栏/底栏加中间独立滚动区解决底部被 `overflow_hidden` 裁切的问题，并全面补齐主窗口、风扇页、详情页、设置页与通用组件中的 `min_w_0` / `min_h_0`、`whitespace_nowrap`、滑块边缘内缩、响应式 4 格预览卡片、单点趋势基线及窗口标题栏拖动支持。
