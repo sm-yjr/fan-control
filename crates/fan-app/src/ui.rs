@@ -175,6 +175,9 @@ define_class!(
                 if let Ok(ui) = self.ivars().ui.try_borrow() {
                     if let Some(ui) = ui.as_ref() {
                         ui.shell.select(section);
+                        if section == Section::Settings {
+                            ui.settings.sync_login_state(ui.demo);
+                        }
                     }
                 }
             }
@@ -701,9 +704,10 @@ define_class!(
                 } else {
                     NSControlStateValueOff
                 });
-                ui.settings
-                    .message
-                    .setStringValue(&text(&result.map(|()| String::new()).unwrap_or_else(|e| e)));
+                match result {
+                    Ok(()) => ui.settings.set_general_message("", false),
+                    Err(error) => ui.settings.set_general_message(&error, true),
+                }
             }
         }
         #[unsafe(method(language:))]
@@ -726,8 +730,7 @@ define_class!(
                     );
                 }
                 ui.settings
-                    .message
-                    .setStringValue(&text("界面语言已保存，下次启动应用时生效。"));
+                    .set_general_message("界面语言已保存，下次启动应用时生效。", false);
             }
         }
         #[unsafe(method(uninstall:))]
@@ -903,6 +906,7 @@ impl Ui {
 
     fn open_preferences(&mut self) {
         self.panel.close();
+        self.settings.sync_login_state(self.demo);
         self.shell.show(Section::Settings);
     }
 
@@ -1133,8 +1137,21 @@ impl Ui {
         self.shell.window.displayIfNeeded();
         self.verify_policy_flow(delegate);
 
-        // 5. Verify Settings page and menu bar visual picker modes.
+        // 5. Verify Settings page, login toggle wiring, and menu bar visual picker modes.
         self.open_preferences();
+        self.shell.window.layoutIfNeeded();
+        let login_frame = self.settings.login.frame();
+        assert!(
+            login_frame.size.width >= 32. && login_frame.size.height >= 20.,
+            "login switch should have clickable native geometry: {:?}",
+            login_frame.size
+        );
+        assert_eq!(self.settings.login.action(), Some(sel!(login:)));
+        assert!(self.settings.login.target().is_some());
+        self.settings.set_general_message("test notice", true);
+        assert!(!self.settings.message.isHidden());
+        self.settings.set_general_message("", false);
+        assert!(self.settings.message.isHidden());
         for mode in MenuBarDisplayMode::ALL {
             self.status.set_mode(mode, true);
             self.settings.set_menu_bar_mode(mode);

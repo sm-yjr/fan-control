@@ -216,6 +216,7 @@ pub(crate) struct SettingsPage {
     pub view: Retained<NSStackView>,
     pub login: Retained<NSSwitch>,
     pub message: Retained<NSTextField>,
+    message_is_error: Cell<bool>,
     picker_options: Vec<PickerOption>,
     service_badge: StatusBadge,
     pub install: Retained<NSButton>,
@@ -408,7 +409,13 @@ impl SettingsPage {
                 .map(|_| String::new())
                 .unwrap_or_else(|error| error),
         );
+        message.setTextColor(Some(&NSColor::systemOrangeColor()));
+        message.setHidden(message.stringValue().length() == 0);
         view.addArrangedSubview(&message);
+        message
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
+            .setActive(true);
         view.setCustomSpacing_afterView(form::SECTION_GAP, &message);
 
         // ── Section 2: 风扇控制服务 ──
@@ -454,7 +461,12 @@ impl SettingsPage {
             .setActive(true);
 
         let configuration_notice = fluid_caption(mtm, "");
+        configuration_notice.setHidden(true);
         view.addArrangedSubview(&configuration_notice);
+        configuration_notice
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
+            .setActive(true);
         view.setCustomSpacing_afterView(form::SECTION_GAP, &configuration_notice);
 
         // ── Section 3: 支持与关于 ──
@@ -491,10 +503,12 @@ impl SettingsPage {
             .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
             .setActive(true);
 
+        let initial_error = message.stringValue().length() > 0;
         Self {
             view,
             login,
             message,
+            message_is_error: Cell::new(initial_error),
             picker_options,
             service_badge,
             install,
@@ -523,6 +537,40 @@ impl SettingsPage {
                 NSColor::secondaryLabelColor()
             };
             option.caption.setTextColor(Some(&color));
+        }
+    }
+
+    pub fn set_general_message(&self, value: &str, is_error: bool) {
+        self.message.setStringValue(&text(value));
+        let color = if is_error {
+            NSColor::systemOrangeColor()
+        } else {
+            NSColor::secondaryLabelColor()
+        };
+        self.message.setTextColor(Some(&color));
+        self.message_is_error.set(is_error && !value.is_empty());
+        self.message.setHidden(value.is_empty());
+    }
+
+    pub fn sync_login_state(&self, demo: bool) {
+        if demo {
+            return;
+        }
+        match crate::settings::enabled() {
+            Ok(enabled) => {
+                self.login.setState(if enabled {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+                if self.message_is_error.get() {
+                    self.set_general_message("", false);
+                }
+            }
+            Err(error) => {
+                self.login.setState(NSControlStateValueOff);
+                self.set_general_message(&error, true);
+            }
         }
     }
 

@@ -40,10 +40,11 @@ impl LoginStatus {
 
     fn enabled(self) -> Result<bool, String> {
         match self {
-            Self::NotRegistered => Ok(false),
+            // macOS returns SMAppServiceStatusNotFound (3) for mainAppService before
+            // the app has ever been registered with Background Task Management.
+            Self::NotRegistered | Self::NotFound => Ok(false),
             Self::Enabled => Ok(true),
             Self::RequiresApproval => Err(APPROVAL_MESSAGE.into()),
-            Self::NotFound => Err("系统找不到当前应用的登录启动服务。".into()),
         }
     }
 }
@@ -146,9 +147,9 @@ fn validate_bundle_paths(requested: &Path, running: &Path) -> Result<(), String>
 fn set_with_service(service: &impl LoginService, wanted: bool) -> Result<(), String> {
     let before = service.status()?;
     match (wanted, before) {
-        (true, LoginStatus::Enabled) | (false, LoginStatus::NotRegistered) => return Ok(()),
+        (true, LoginStatus::Enabled)
+        | (false, LoginStatus::NotRegistered | LoginStatus::NotFound) => return Ok(()),
         (true, LoginStatus::RequiresApproval) => return Err(APPROVAL_MESSAGE.into()),
-        (_, LoginStatus::NotFound) => return Err("系统找不到当前应用的登录启动服务。".into()),
         _ => {}
     }
     if wanted {
@@ -158,9 +159,10 @@ fn set_with_service(service: &impl LoginService, wanted: bool) -> Result<(), Str
     }
     let after = service.status()?;
     match (wanted, after) {
-        (true, LoginStatus::Enabled) | (false, LoginStatus::NotRegistered) => Ok(()),
+        (true, LoginStatus::Enabled)
+        | (false, LoginStatus::NotRegistered | LoginStatus::NotFound) => Ok(()),
         (_, LoginStatus::RequiresApproval) => Err(APPROVAL_MESSAGE.into()),
-        (_, LoginStatus::NotFound) => Err("系统找不到当前应用的登录启动服务。".into()),
+        (true, LoginStatus::NotFound) => Err("系统找不到当前应用的登录启动服务。".into()),
         _ => Err("登录启动状态尚未确认，请重新查询后再试。".into()),
     }
 }
@@ -211,7 +213,7 @@ mod tests {
         assert_eq!(LoginStatus::from_raw(0).unwrap().enabled(), Ok(false));
         assert_eq!(LoginStatus::from_raw(1).unwrap().enabled(), Ok(true));
         assert!(LoginStatus::from_raw(2).unwrap().enabled().is_err());
-        assert!(LoginStatus::from_raw(3).unwrap().enabled().is_err());
+        assert_eq!(LoginStatus::from_raw(3).unwrap().enabled(), Ok(false));
         assert!(LoginStatus::from_raw(99).is_err());
     }
 
@@ -254,12 +256,20 @@ mod tests {
     }
 
     #[test]
-    fn missing_service_does_not_attempt_changes() {
+    fn first_time_not_found_registers_cleanly_and_reports_persistent_not_found() {
+        // Fresh macOS mainAppService starts in SMAppServiceStatusNotFound (3).
         let service = MockService::new(LoginStatus::NotFound);
-        assert!(set_with_service(&service, true).is_err());
-        assert!(set_with_service(&service, false).is_err());
-        assert_eq!(service.register_calls.get(), 0);
+        set_with_service(&service, false).unwrap();
         assert_eq!(service.unregister_calls.get(), 0);
+        set_with_service(&service, true).unwrap();
+        assert_eq!(service.register_calls.get(), 1);
+        assert_eq!(service.status.get(), LoginStatus::Enabled);
+
+        // If registration claims success but status stays NotFound, fail explicitly.
+        let mut broken = MockService::new(LoginStatus::NotFound);
+        broken.register_result = Ok(LoginStatus::NotFound);
+        assert!(set_with_service(&broken, true).is_err());
+        assert_eq!(broken.register_calls.get(), 1);
     }
 
     #[test]
