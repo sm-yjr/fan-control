@@ -8,9 +8,9 @@
 
 ### 2026-11-26：0.7.0 GPUI + GPUI Kit + Liquid Glass 重构与登录启动修复
 
-本次在 `main` 分支完成两项更新：首先修复 `settings.rs` 中 `SMAppService.mainAppService.status` 在首次注册前返回 `SMAppServiceStatusNotFound`（3）导致“登录时启动”读取失败与无法开启的 bug（`a31fd85`）；随后将主窗口、菜单栏浮窗与曲线编辑器全面迁移至 GPUI（`gpui-pre` 0.3.14 + `runtime_shaders`、`accesskit_macos`）与 GPUI Kit（`gpui-component` 0.11.0 + `gpui-kit-assets`），在 macOS 26+ 挂载原生 `NSGlassEffectView` Liquid Glass（macOS 14–15 自动降级为 `NSVisualEffectView`），移除 17 个被替代的旧 AppKit 视图文件，保留薄 AppKit 桥接处理 `NSStatusItem`、Sparkle 动态加载、`SMAppService` 与原生系统对话框，并将 Rust MSRV 升级至 1.92.0。
+本次在 `main` 分支完成两项更新：首先修复 `settings.rs` 中 `SMAppService.mainAppService.status` 在首次注册前返回 `SMAppServiceStatusNotFound`（3）导致“登录时启动”读取失败与无法开启的 bug（`a31fd85`）；随后将主窗口、菜单栏浮窗与曲线编辑器全面迁移至 GPUI（`gpui-pre` 0.3.14 + `runtime_shaders`、`accesskit_macos`）与 GPUI Kit（`gpui-component` 0.11.0 + `gpui-kit-assets`），在 macOS 26+ 挂载原生 `NSGlassEffectView` Liquid Glass（macOS 14–15 自动降级为 `NSVisualEffectView`），移除 17 个被替代的旧 AppKit 视图文件，保留薄 AppKit 桥接处理 `NSStatusItem`、Sparkle 动态加载、`SMAppService` 与原生系统对话框，并将 Rust MSRV 升级至 1.98.0。
 
-底层 `fan-core` 算法、SMC 读写、helper 协议 9、租约与睡眠恢复路径均未改动。本地与 CI 验证覆盖 rustfmt、Clippy（零警告）、全部 Rust 工作区测试（含 Rust 1.92.0 MSRV）、中英文 `--ui-smoke`（确认本机 `NSGlassEffectView` 可用）、`--dashboard-render`、Widget 单元测试、Developer ID 由内到外签名、独立 helper `otool -L` 隔离与 Sparkle 运行时检查。由于终端无屏幕录制权限，未在后台自动截取实机 Metal 帧；真实桌面交互、深浅色与 Liquid Glass 实机观感、键盘焦点、VoiceOver 实操、真实重启验证“登录时启动”、真实硬件写入回读及旧版自动更新实测继续保留未验证状态，不计为通过。
+底层 `fan-core` 算法、SMC 读写、helper 协议 9、租约与睡眠恢复路径均未改动。本地与 CI 验证覆盖 rustfmt、Clippy（零警告）、全部 Rust 工作区测试（含 Rust 1.98.0 MSRV）、中英文 `--ui-smoke`（确认本机 `NSGlassEffectView` 可用）、`--dashboard-render`、Widget 单元测试、Developer ID 由内到外签名、独立 helper `otool -L` 隔离与 Sparkle 运行时检查。由于终端无屏幕录制权限，未在后台自动截取实机 Metal 帧；真实桌面交互、深浅色与 Liquid Glass 实机观感、键盘焦点、VoiceOver 实操、真实重启验证“登录时启动”、真实硬件写入回读及旧版自动更新实测继续保留未验证状态，不计为通过。
 
 ### 2026-11-26：0.6.1 设置页与侧边栏原生视觉精修
 
