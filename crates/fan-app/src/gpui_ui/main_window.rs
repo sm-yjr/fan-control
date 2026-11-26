@@ -21,8 +21,9 @@ use crate::status_bar::MenuBarDisplayMode;
 use fan_core::SensorGroup;
 use gpui::{
     div, prelude::*, px, AnyElement, BoxShadow, Context, Entity, FontWeight, MouseButton, Point,
-    Render, Window,
+    Render, Window, WindowControlArea,
 };
+use gpui_component::Theme;
 use gpui_kit_assets::IconName;
 
 pub const MAIN_WIDTH: f64 = 860.0;
@@ -33,8 +34,12 @@ pub struct MainWindowView {
 }
 
 impl MainWindowView {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_appearance(window, |_, window, cx| {
+            Theme::sync_system_appearance(Some(window), cx);
+        })
+        .detach();
         Self { state }
     }
 }
@@ -63,6 +68,8 @@ impl Render for MainWindowView {
         let state_back = self.state.clone();
         let state_fwd = self.state.clone();
         let header = div()
+            .flex_shrink_0()
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
@@ -70,6 +77,7 @@ impl Render for MainWindowView {
             .px(px(24.0))
             .pt(px(14.0))
             .pb(px(10.0))
+            .window_control_area(WindowControlArea::Drag)
             .child(nav_capsule(
                 &theme,
                 can_back,
@@ -86,6 +94,7 @@ impl Render for MainWindowView {
                     .text_size(px(16.5))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
+                    .whitespace_nowrap()
                     .child(t(section.title())),
             );
 
@@ -99,6 +108,8 @@ impl Render for MainWindowView {
 
         let detail_pane = div()
             .flex_1()
+            .min_w_0()
+            .min_h_0()
             .h_full()
             .bg(theme.detail_bg)
             .flex()
@@ -109,11 +120,19 @@ impl Render for MainWindowView {
                 div()
                     .id("detail-scroll")
                     .flex_1()
+                    .min_h_0()
+                    .w_full()
                     .overflow_y_scroll()
-                    .px(px(26.0))
-                    .pb(px(26.0))
+                    .px(px(24.0))
+                    .pb(px(24.0))
                     .pt(px(4.0))
-                    .child(page_content),
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(740.0))
+                            .mx_auto()
+                            .child(page_content),
+                    ),
             );
 
         div()
@@ -277,18 +296,24 @@ impl MainWindowView {
 
         let _ = cx;
         div()
-            .w(px(210.0))
+            .w(px(214.0))
             .h_full()
             .flex_shrink_0()
             .bg(theme.sidebar_bg)
             .flex()
             .flex_col()
-            .pt(px(42.0))
             .pb(px(14.0))
-            .gap(px(12.0))
+            .gap(px(10.0))
+            .child(
+                div()
+                    .h(px(42.0))
+                    .w_full()
+                    .flex_shrink_0()
+                    .window_control_area(WindowControlArea::Drag),
+            )
             .child(hero_card)
             .child(nav_list)
-            .child(div().flex_1())
+            .child(div().flex_1().min_h_0())
             .child(reset_btn)
     }
 
@@ -341,6 +366,7 @@ impl MainWindowView {
 
         let hero_card = glass_card(theme).p(px(16.0)).child(
             div()
+                .w_full()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -353,6 +379,7 @@ impl MainWindowView {
                         .items_center()
                         .gap(px(12.0))
                         .flex_1()
+                        .min_w_0()
                         .child(squircle_badge(
                             IconName::Fan,
                             match view.notice.tone {
@@ -366,6 +393,8 @@ impl MainWindowView {
                         ))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.0))
@@ -373,6 +402,7 @@ impl MainWindowView {
                                     div()
                                         .flex()
                                         .flex_row()
+                                        .flex_wrap()
                                         .items_center()
                                         .gap(px(8.0))
                                         .child(
@@ -417,15 +447,19 @@ impl MainWindowView {
             .gap(px(10.0))
             .child(
                 div()
+                    .w_full()
                     .flex()
                     .flex_row()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
+                    .gap(px(10.0))
                     .child(
                         div()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_primary)
+                            .whitespace_nowrap()
                             .child(t("散热方式")),
                     )
                     .child(glass_segmented(
@@ -464,16 +498,18 @@ impl MainWindowView {
 
         let thermal_card = glass_card(theme).p(px(16.0)).gap(px(12.0)).child(
             div()
+                .w_full()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(18.0))
+                .gap(px(16.0))
                 .child(
                     div()
-                        .w(px(155.0))
+                        .w(px(142.0))
+                        .flex_shrink_0()
                         .flex()
                         .flex_col()
-                        .gap(px(6.0))
+                        .gap(px(4.0))
                         .child(
                             div()
                                 .text_size(px(11.5))
@@ -483,20 +519,22 @@ impl MainWindowView {
                         )
                         .child(
                             div()
-                                .text_size(px(36.0))
-                                .line_height(px(38.0))
+                                .text_size(px(34.0))
+                                .line_height(px(36.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.text_primary)
                                 .child(temp_str),
                         )
                         .child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .gap(px(8.0))
                                 .text_size(px(11.5))
                                 .text_color(theme.text_secondary)
-                                .child(t(view.trend))
+                                .child(t(view.trend)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(theme.text_muted)
                                 .child(format!(
                                     "{} {}",
                                     crate::i18n::translate("热负荷"),
@@ -504,18 +542,9 @@ impl MainWindowView {
                                 )),
                         ),
                 )
-                .child(
-                    inset_well(theme)
-                        .flex_1()
-                        .p(px(12.0))
-                        .child(temperature_trend_chart(
-                            theme,
-                            &st.history,
-                            view.temperature,
-                            fresh,
-                            82.0,
-                        )),
-                ),
+                .child(inset_well(theme).flex_1().min_w_0().p(px(12.0)).child(
+                    temperature_trend_chart(theme, &st.history, view.temperature, fresh, 82.0),
+                )),
         );
 
         // Fan Gauges Card
@@ -630,36 +659,49 @@ impl MainWindowView {
                 },
             );
 
-            let mut fan_panel = glass_card(theme).p(px(16.0)).gap(px(12.0)).child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(18.0))
-                    .child(rpm_arc_gauge(theme, &card, true))
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.0))
-                            .child(mode_seg)
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(theme.text_secondary)
-                                    .child(t(card.choice.explanation())),
-                            )
-                            .when(!card.target.is_empty(), |this| {
-                                this.child(
+            let mut fan_panel = glass_card(theme)
+                .p(px(16.0))
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(16.0))
+                        .child(rpm_arc_gauge(theme, &card, true))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .child(
                                     div()
-                                        .text_size(px(11.5))
-                                        .text_color(theme.text_muted)
-                                        .child(t(&card.target)),
+                                        .text_size(px(13.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.text_primary)
+                                        .child(card.name.clone()),
                                 )
-                            }),
-                    ),
-            );
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .line_height(px(17.0))
+                                        .text_color(theme.text_secondary)
+                                        .child(t(card.choice.explanation())),
+                                )
+                                .when(!card.target.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(theme.text_muted)
+                                            .child(t(&card.target)),
+                                    )
+                                }),
+                        ),
+                )
+                .child(mode_seg);
 
             if card.choice == FanChoice::Fixed {
                 let pct_steps: Vec<i32> = (0..=20).map(|i| i * 5).collect();
@@ -753,12 +795,16 @@ impl MainWindowView {
 
         let status_card = glass_card(theme).p(px(16.0)).child(
             div()
+                .w_full()
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_between()
+                .gap(px(12.0))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -771,6 +817,8 @@ impl MainWindowView {
                         ))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.0))
@@ -1110,6 +1158,7 @@ impl MainWindowView {
 
             rows.push(
                 div()
+                    .w_full()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -1120,6 +1169,8 @@ impl MainWindowView {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
                             .flex()
                             .flex_col()
                             .gap(px(1.0))
@@ -1128,24 +1179,27 @@ impl MainWindowView {
                                     .text_size(px(12.5))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text_primary)
+                                    .truncate()
                                     .child(sensor.name),
                             )
                             .child(
                                 div()
                                     .text_size(px(10.5))
                                     .text_color(theme.text_muted)
+                                    .truncate()
                                     .child(sensor.key),
                             ),
                     )
                     .child(
                         div()
+                            .flex_shrink_0()
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(10.0))
                             .child(
                                 div()
-                                    .w(px(100.0))
+                                    .w(px(88.0))
                                     .h(px(5.0))
                                     .rounded_full()
                                     .bg(theme.slider_track)
@@ -1160,7 +1214,7 @@ impl MainWindowView {
                             )
                             .child(
                                 div()
-                                    .w(px(54.0))
+                                    .w(px(56.0))
                                     .text_right()
                                     .text_size(px(12.5))
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -1193,8 +1247,10 @@ impl MainWindowView {
             .gap(px(12.0))
             .child(
                 div()
+                    .w_full()
                     .flex()
                     .flex_row()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .gap(px(8.0))

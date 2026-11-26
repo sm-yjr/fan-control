@@ -139,6 +139,7 @@ pub fn status_badge(theme: &GlassTheme, tone: Tone, label: &str) -> Div {
     div()
         .flex()
         .flex_row()
+        .flex_shrink_0()
         .items_center()
         .gap(px(5.0))
         .px(px(9.0))
@@ -147,12 +148,14 @@ pub fn status_badge(theme: &GlassTheme, tone: Tone, label: &str) -> Div {
         .bg(bg)
         .border_1()
         .border_color(fg.opacity(0.24))
+        .whitespace_nowrap()
         .child(vector_icon(icon, 13.0, fg))
         .child(
             div()
                 .text_size(px(11.5))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(fg)
+                .whitespace_nowrap()
                 .child(t(label)),
         )
 }
@@ -208,6 +211,7 @@ pub fn pill_button(
     let mut btn = div()
         .id(id)
         .flex()
+        .flex_shrink_0()
         .items_center()
         .justify_center()
         .px(px(if style == ButtonStyle::Link {
@@ -221,6 +225,7 @@ pub fn pill_button(
         .border_1()
         .border_color(border)
         .text_size(px(12.5))
+        .whitespace_nowrap()
         .font_weight(
             if style == ButtonStyle::Primary || style == ButtonStyle::DangerSoft {
                 FontWeight::SEMIBOLD
@@ -375,10 +380,11 @@ pub fn glass_segmented(
             .flex()
             .items_center()
             .justify_center()
-            .px(px(12.0))
+            .px(px(if full_width { 8.0 } else { 11.0 }))
             .py(px(4.5))
             .rounded_full()
-            .text_size(px(12.5))
+            .text_size(px(12.0))
+            .whitespace_nowrap()
             .font_weight(if is_active {
                 FontWeight::SEMIBOLD
             } else {
@@ -392,7 +398,9 @@ pub fn glass_segmented(
             .child(t(label));
 
         if full_width {
-            seg = seg.flex_1();
+            seg = seg.flex_1().min_w_0();
+        } else {
+            seg = seg.flex_shrink_0();
         }
         if is_active {
             seg = seg
@@ -480,13 +488,19 @@ pub fn settings_row(
     subtitle: Option<&str>,
     trailing: impl IntoElement,
 ) -> Div {
-    let mut left = div().flex().flex_col().gap(px(2.0)).flex_1().child(
-        div()
-            .text_size(px(13.0))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_primary)
-            .child(t(title)),
-    );
+    let mut left = div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .flex_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_primary)
+                .child(t(title)),
+        );
     if let Some(sub) = subtitle {
         if !sub.is_empty() {
             left = left.child(
@@ -499,6 +513,7 @@ pub fn settings_row(
     }
 
     div()
+        .w_full()
         .flex()
         .flex_row()
         .items_center()
@@ -512,6 +527,7 @@ pub fn settings_row(
             div()
                 .flex()
                 .flex_row()
+                .flex_shrink_0()
                 .items_center()
                 .gap(px(8.0))
                 .child(trailing),
@@ -587,61 +603,73 @@ pub fn step_slider(
     let mut hit_cells = div()
         .relative()
         .w_full()
-        .h(px(26.0))
+        .h(px(24.0))
         .flex()
         .flex_row()
         .items_center();
 
-    // Background full track + active accent fill + Tahoe pill thumb.
-    let track = div()
+    // Background full track + active accent fill + Tahoe pill thumb, inset by 7px so the
+    // 14px thumb never clips outside the container at 0% or 100%.
+    let track_layer = div()
         .absolute()
-        .left_0()
-        .right_0()
-        .top(px(11.0))
-        .h(px(4.0))
-        .rounded_full()
-        .bg(theme.slider_track)
-        .overflow_hidden()
+        .left(px(7.0))
+        .right(px(7.0))
+        .top_0()
+        .bottom_0()
         .child(
             div()
-                .h_full()
-                .w(gpui::relative(frac))
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(10.0))
+                .h(px(4.0))
                 .rounded_full()
-                .bg(if enabled {
-                    theme.accent
-                } else {
-                    theme.text_muted
-                }),
+                .bg(theme.slider_track)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(gpui::relative(frac))
+                        .rounded_full()
+                        .bg(if enabled {
+                            theme.accent
+                        } else {
+                            theme.text_muted
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(3.0))
+                .left(gpui::relative(frac))
+                .ml(px(-7.0))
+                .w(px(14.0))
+                .h(px(18.0))
+                .rounded_full()
+                .bg(theme.toggle_thumb)
+                .border_1()
+                .border_color(rgba(0x00000018))
+                .shadow(vec![BoxShadow {
+                    color: rgba(0x0000002B).into(),
+                    offset: Point::new(px(0.0), px(1.5)),
+                    blur_radius: px(4.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }]),
         );
 
-    let thumb = div()
-        .absolute()
-        .top(px(4.0))
-        .left(gpui::relative(frac))
-        .ml(px(-6.0))
-        .w(px(12.0))
-        .h(px(18.0))
-        .rounded_full()
-        .bg(theme.toggle_thumb)
-        .border_1()
-        .border_color(rgba(0x00000018))
-        .shadow(vec![BoxShadow {
-            color: rgba(0x0000002B).into(),
-            offset: Point::new(px(0.0), px(1.5)),
-            blur_radius: px(4.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }]);
+    hit_cells = hit_cells.child(track_layer);
 
-    hit_cells = hit_cells.child(track);
-
-    // Interactive invisible hit cells across every discrete step + subtle tick dots below.
+    // Interactive transparent hit cells on TOP of track & thumb across every discrete step,
+    // plus subtle tick dots below.
     let mut dots = div()
         .w_full()
         .flex()
         .flex_row()
+        .items_center()
         .justify_between()
-        .px(px(4.0));
+        .px(px(6.0));
 
     for (idx, &value) in steps.iter().enumerate() {
         let cb = on_select.clone();
@@ -669,8 +697,6 @@ pub fn step_slider(
                 }),
         );
     }
-
-    hit_cells = hit_cells.child(thumb);
 
     div()
         .w_full()
@@ -731,7 +757,7 @@ pub fn menu_bar_preview_tile(
         .border_color(rgba(0xFFFFFF55));
 
     let wallpaper = div()
-        .w(px(108.0))
+        .w_full()
         .h(px(56.0))
         .rounded(px(9.5))
         .overflow_hidden()
@@ -749,6 +775,8 @@ pub fn menu_bar_preview_tile(
 
     div()
         .id(id)
+        .flex_1()
+        .min_w_0()
         .flex()
         .flex_col()
         .items_center()
@@ -759,6 +787,8 @@ pub fn menu_bar_preview_tile(
         })
         .child(
             div()
+                .w_full()
+                .max_w(px(120.0))
                 .p(px(2.5))
                 .rounded(px(13.0))
                 .border_2()
@@ -768,6 +798,7 @@ pub fn menu_bar_preview_tile(
         .child(
             div()
                 .text_size(px(11.5))
+                .whitespace_nowrap()
                 .font_weight(if selected {
                     FontWeight::SEMIBOLD
                 } else {

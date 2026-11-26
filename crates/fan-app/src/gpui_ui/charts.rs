@@ -25,9 +25,9 @@ pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl 
     };
     let (arc_color, _) = theme.tone_colors(gauge_tone);
     let track_color = theme.slider_track;
-    let stroke_w = if compact { 8.5 } else { 10.5 };
-    let gauge_w = if compact { 148.0 } else { 184.0 };
-    let gauge_h = if compact { 86.0 } else { 104.0 };
+    let stroke_w = if compact { 8.0 } else { 10.0 };
+    let gauge_w = if compact { 146.0 } else { 184.0 };
+    let gauge_h = if compact { 76.0 } else { 100.0 };
 
     let rpm_text = card
         .measured_rpm
@@ -38,9 +38,9 @@ pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl 
         move |_bounds, _window, _cx| {},
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _cx| {
             let cx = f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.0;
-            let cy = f32::from(bounds.origin.y) + f32::from(bounds.size.height) - 10.0;
+            let cy = f32::from(bounds.origin.y) + f32::from(bounds.size.height) - 8.0;
             let r = (f32::from(bounds.size.width) / 2.0 - stroke_w - 4.0)
-                .min(f32::from(bounds.size.height) - stroke_w - 8.0)
+                .min(f32::from(bounds.size.height) - stroke_w - 6.0)
                 .max(24.0);
 
             // Semicircle track (180° left to 0° right, y grows downward in GPUI).
@@ -69,15 +69,20 @@ pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl 
     .h(px(gauge_h));
 
     div()
+        .w(px(gauge_w))
+        .flex_shrink_0()
         .flex()
         .flex_col()
         .items_center()
         .gap(px(2.0))
         .child(
             div()
-                .text_size(px(if compact { 12.0 } else { 13.0 }))
+                .w_full()
+                .text_center()
+                .text_size(px(if compact { 11.5 } else { 13.0 }))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_primary)
+                .truncate()
                 .child(card.name.clone()),
         )
         .child(
@@ -91,20 +96,22 @@ pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl 
                         .absolute()
                         .left_0()
                         .right_0()
-                        .bottom(px(6.0))
+                        .bottom(px(4.0))
                         .flex()
                         .flex_col()
                         .items_center()
                         .child(
                             div()
-                                .text_size(px(if compact { 21.0 } else { 25.0 }))
+                                .text_size(px(if compact { 20.0 } else { 24.0 }))
+                                .line_height(px(if compact { 22.0 } else { 26.0 }))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.text_primary)
                                 .child(rpm_text),
                         )
                         .child(
                             div()
-                                .text_size(px(10.0))
+                                .text_size(px(9.5))
+                                .line_height(px(11.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_muted)
                                 .child("RPM"),
@@ -113,8 +120,11 @@ pub fn rpm_arc_gauge(theme: &GlassTheme, card: &FanCard, compact: bool) -> impl 
         )
         .child(
             div()
-                .text_size(px(11.5))
+                .w_full()
+                .text_center()
+                .text_size(px(11.0))
                 .text_color(theme.text_secondary)
+                .truncate()
                 .child(t(&card.detail)),
         )
 }
@@ -172,6 +182,25 @@ pub fn temperature_trend_chart(
             }
 
             if temps.len() < 2 {
+                if fresh {
+                    if let Some(v) = latest_temp {
+                        let span_t = (max_t - min_t).max(1.0);
+                        let norm = ((v - min_t) / span_t).clamp(0.0, 1.0) as f32;
+                        let py = y0 + h * (1.0 - norm);
+                        let mut line = PathBuilder::stroke(px(2.0));
+                        line.move_to(point(px(x0), px(py)));
+                        line.line_to(point(px(x0 + w), px(py)));
+                        if let Ok(path) = line.build() {
+                            window.paint_path(path, line_color.opacity(0.65));
+                        }
+                        if let Some(halo) = build_circle_path(x0 + w, py, 6.0) {
+                            window.paint_path(halo, line_color.opacity(0.28));
+                        }
+                        if let Some(dot) = build_circle_path(x0 + w, py, 3.2) {
+                            window.paint_path(dot, line_color);
+                        }
+                    }
+                }
                 return;
             }
             let span_t = (max_t - min_t).max(1.0);

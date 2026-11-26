@@ -1,4 +1,5 @@
-//! GPUI Liquid Glass floating menu-bar dashboard panel.
+//! GPUI Liquid Glass floating menu-bar dashboard panel with pinned header/footer
+//! and scrollable card body so controls and actions are never clipped on any display.
 use crate::gpui_ui::{
     charts::{rpm_arc_gauge, temperature_trend_chart},
     primitives::{
@@ -12,13 +13,16 @@ use crate::presenter::Plan;
 use gpui::{
     div, prelude::*, px, AnyElement, Context, Entity, FontWeight, MouseButton, Render, Window,
 };
+use gpui_component::Theme;
 use gpui_kit_assets::IconName;
+use std::rc::Rc;
 
-pub const POPOVER_WIDTH: f64 = 400.0;
-pub const POPOVER_HEIGHT: f64 = 560.0;
+pub const POPOVER_WIDTH: f64 = 392.0;
+pub const POPOVER_HEIGHT: f64 = 580.0;
 
-type OpenMainCallback = Box<dyn Fn(Section, &mut gpui::App)>;
-type HidePopoverCallback = Box<dyn Fn(&mut gpui::App)>;
+type OpenMainCallback = Rc<dyn Fn(Section, &mut gpui::App)>;
+type HidePopoverCallback = Rc<dyn Fn(&mut gpui::App)>;
+type DeactivateCallback = Rc<dyn Fn(&mut Window)>;
 
 pub struct PopoverView {
     pub state: Entity<AppState>,
@@ -31,13 +35,27 @@ impl PopoverView {
         state: Entity<AppState>,
         on_open_main: impl Fn(Section, &mut gpui::App) + 'static,
         on_hide_popover: impl Fn(&mut gpui::App) + 'static,
+        on_deactivate: Option<DeactivateCallback>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_appearance(window, |_, window, cx| {
+            Theme::sync_system_appearance(Some(window), cx);
+        })
+        .detach();
+        if let Some(deactivate) = on_deactivate {
+            cx.observe_window_activation(window, move |_, window, _| {
+                if !window.is_window_active() {
+                    deactivate(window);
+                }
+            })
+            .detach();
+        }
         Self {
             state,
-            on_open_main: Box::new(on_open_main),
-            on_hide_popover: Box::new(on_hide_popover),
+            on_open_main: Rc::new(on_open_main),
+            on_hide_popover: Rc::new(on_hide_popover),
         }
     }
 }
@@ -64,24 +82,31 @@ impl Render for PopoverView {
             .map(|v| format!("{v:.0}"))
             .unwrap_or_else(|| "—".into());
 
-        // ── Top Header ──
+        // ── Pinned Top Header ──
         let header = div()
+            .flex_shrink_0()
+            .px(px(14.0))
+            .pt(px(12.0))
+            .pb(px(8.0))
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
+            .gap(px(8.0))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(9.0))
-                    .child(squircle_badge(IconName::Fan, IconTint::Blue, 24.0, true))
+                    .gap(px(8.0))
+                    .min_w_0()
+                    .child(squircle_badge(IconName::Fan, IconTint::Blue, 22.0, true))
                     .child(
                         div()
-                            .text_size(px(15.0))
+                            .text_size(px(14.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_primary)
+                            .whitespace_nowrap()
                             .child("Fan Control"),
                     ),
             )
@@ -93,13 +118,14 @@ impl Render for PopoverView {
                 let state_entity = self.state.clone();
                 let (fg, bg) = theme.tone_colors(view.notice.tone);
                 let mut row = div()
+                    .w_full()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
                     .gap(px(8.0))
-                    .px(px(12.0))
-                    .py(px(9.0))
+                    .px(px(11.0))
+                    .py(px(8.0))
                     .rounded(px(12.0))
                     .bg(bg)
                     .border_1()
@@ -107,7 +133,9 @@ impl Render for PopoverView {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .text_size(px(11.5))
+                            .line_height(px(15.0))
                             .text_color(theme.text_primary)
                             .child(t(view.notice.body)),
                     );
@@ -133,21 +161,23 @@ impl Render for PopoverView {
             };
 
         // ── Hero Card: Chip Temperature + 10-Min Metal Trend ──
-        let temp_card = glass_card(&theme).p(px(14.0)).child(
+        let temp_card = glass_card(&theme).p(px(12.0)).child(
             div()
+                .w_full()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(14.0))
+                .gap(px(12.0))
                 .child(
                     div()
-                        .w(px(116.0))
+                        .w(px(104.0))
+                        .flex_shrink_0()
                         .flex()
                         .flex_col()
-                        .gap(px(4.0))
+                        .gap(px(3.0))
                         .child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(px(11.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_secondary)
                                 .child(t("芯片温度")),
@@ -160,15 +190,15 @@ impl Render for PopoverView {
                                 .gap(px(2.0))
                                 .child(
                                     div()
-                                        .text_size(px(38.0))
-                                        .line_height(px(40.0))
+                                        .text_size(px(32.0))
+                                        .line_height(px(34.0))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(theme.text_primary)
                                         .child(temp_digits),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(16.0))
+                                        .text_size(px(14.0))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme.text_secondary)
                                         .child("°C"),
@@ -176,22 +206,24 @@ impl Render for PopoverView {
                         )
                         .child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(px(11.0))
                                 .text_color(theme.text_secondary)
+                                .truncate()
                                 .child(t(view.trend)),
                         ),
                 )
-                .child(div().flex_1().child(temperature_trend_chart(
+                .child(div().flex_1().min_w_0().child(temperature_trend_chart(
                     &theme,
                     &st.history,
                     view.temperature,
                     fresh,
-                    58.0,
+                    46.0,
                 ))),
         );
 
         // ── Fan Gauges Glass Card ──
         let mut gauges_wrap = div()
+            .w_full()
             .flex()
             .flex_row()
             .flex_wrap()
@@ -200,8 +232,8 @@ impl Render for PopoverView {
         if cards.is_empty() {
             gauges_wrap = gauges_wrap.child(
                 div()
-                    .py(px(14.0))
-                    .text_size(px(12.5))
+                    .py(px(12.0))
+                    .text_size(px(12.0))
                     .text_color(theme.text_secondary)
                     .child(t("未检测到可控风扇")),
             );
@@ -211,11 +243,11 @@ impl Render for PopoverView {
             }
         }
         let fans_card = glass_card(&theme)
-            .p(px(14.0))
-            .gap(px(8.0))
+            .p(px(12.0))
+            .gap(px(6.0))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(11.5))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_secondary)
                     .child(t("风扇转速")),
@@ -248,11 +280,11 @@ impl Render for PopoverView {
         );
 
         let mut control_card = glass_card(&theme)
-            .p(px(14.0))
-            .gap(px(10.0))
+            .p(px(12.0))
+            .gap(px(8.0))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(11.5))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_secondary)
                     .child(t("散热方式")),
@@ -268,32 +300,52 @@ impl Render for PopoverView {
                 control_card = control_card
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .flex_row()
                             .items_center()
                             .justify_between()
+                            .gap(px(6.0))
                             .child(
                                 div()
-                                    .text_size(px(12.5))
+                                    .text_size(px(12.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.text_primary)
+                                    .whitespace_nowrap()
                                     .child(t("散热偏好")),
                             )
                             .child(
                                 div()
-                                    .px(px(9.0))
-                                    .py(px(2.5))
-                                    .rounded_full()
-                                    .bg(theme.capsule_bg)
-                                    .border_1()
-                                    .border_color(theme.capsule_border)
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text_secondary)
-                                    .child(format!(
-                                        "{}：{}",
-                                        crate::i18n::translate("当前选择"),
-                                        cooling_preference_label(bias)
-                                    )),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .when(bias != 0, |this| {
+                                        this.child(pill_button(
+                                            "pop-pref-reset",
+                                            "恢复默认",
+                                            ButtonStyle::Link,
+                                            !saving,
+                                            &theme,
+                                            move |_, cx| {
+                                                state_reset
+                                                    .update(cx, |s, cx| s.save_tuning_bias(0, cx));
+                                            },
+                                        ))
+                                    })
+                                    .child(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(2.0))
+                                            .rounded_full()
+                                            .bg(theme.capsule_bg)
+                                            .border_1()
+                                            .border_color(theme.capsule_border)
+                                            .text_size(px(11.0))
+                                            .text_color(theme.text_secondary)
+                                            .whitespace_nowrap()
+                                            .child(cooling_preference_label(bias)),
+                                    ),
                             ),
                     )
                     .child(step_slider(
@@ -309,50 +361,26 @@ impl Render for PopoverView {
                     ))
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .flex_row()
                             .justify_between()
-                            .text_size(px(11.0))
+                            .text_size(px(10.5))
                             .text_color(theme.text_secondary)
                             .child(t("更安静"))
                             .child(t("默认"))
                             .child(t("更凉快")),
                     )
-                    .when(bias != 0 || !pref_notice.is_empty(), |this| {
+                    .when(!pref_notice.is_empty(), |this| {
                         this.child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(if bias != 0 {
-                                    pill_button(
-                                        "pop-pref-reset",
-                                        "恢复默认",
-                                        ButtonStyle::Link,
-                                        !saving,
-                                        &theme,
-                                        move |_, cx| {
-                                            state_reset
-                                                .update(cx, |s, cx| s.save_tuning_bias(0, cx));
-                                        },
-                                    )
-                                    .into_any_element()
+                                .text_size(px(11.0))
+                                .text_color(if pref_is_err {
+                                    theme.warning
                                 } else {
-                                    div().into_any_element()
+                                    theme.text_secondary
                                 })
-                                .when(!pref_notice.is_empty(), |row| {
-                                    row.child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(if pref_is_err {
-                                                theme.warning
-                                            } else {
-                                                theme.text_secondary
-                                            })
-                                            .child(t(&pref_notice)),
-                                    )
-                                }),
+                                .child(t(&pref_notice)),
                         )
                     });
             }
@@ -360,19 +388,23 @@ impl Render for PopoverView {
                 let pct_steps: Vec<i32> = (0..=20).map(|i| i * 5).collect();
                 let state_speed = self.state.clone();
                 let state_curve = self.state.clone();
-                let view_handle = cx.entity().clone();
+                let on_hide = self.on_hide_popover.clone();
+                let on_open = self.on_open_main.clone();
                 control_card = control_card
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .flex_row()
                             .items_center()
                             .justify_between()
+                            .gap(px(8.0))
                             .child(
                                 div()
-                                    .text_size(px(12.5))
+                                    .text_size(px(12.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.text_primary)
+                                    .whitespace_nowrap()
                                     .child(format!(
                                         "{} {:.0}%",
                                         crate::i18n::translate("固定速度"),
@@ -387,9 +419,11 @@ impl Render for PopoverView {
                                 &theme,
                                 move |_, cx| {
                                     state_curve.update(cx, |s, cx| s.open_curve_editor(None, cx));
-                                    view_handle.update(cx, |this, cx| {
-                                        (this.on_hide_popover)(cx);
-                                        (this.on_open_main)(Section::Fans, cx);
+                                    let on_hide = on_hide.clone();
+                                    let on_open = on_open.clone();
+                                    cx.defer(move |cx| {
+                                        on_hide(cx);
+                                        on_open(Section::Fans, cx);
                                     });
                                 },
                             )),
@@ -411,14 +445,16 @@ impl Render for PopoverView {
 
         control_card = control_card.child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(11.0))
+                .line_height(px(15.0))
                 .text_color(theme.text_secondary)
                 .child(t(view.plan_description)),
         );
 
-        // ── Footer Bar ──
+        // ── Pinned Footer Bar ──
         let open_main_btn = {
-            let view_handle = cx.entity().clone();
+            let on_hide = self.on_hide_popover.clone();
+            let on_open = self.on_open_main.clone();
             pill_button(
                 "pop-open-main",
                 "打开 Fan Control",
@@ -426,15 +462,18 @@ impl Render for PopoverView {
                 true,
                 &theme,
                 move |_, cx| {
-                    view_handle.update(cx, |this, cx| {
-                        (this.on_hide_popover)(cx);
-                        (this.on_open_main)(Section::Overview, cx);
+                    let on_hide = on_hide.clone();
+                    let on_open = on_open.clone();
+                    cx.defer(move |cx| {
+                        on_hide(cx);
+                        on_open(Section::Overview, cx);
                     });
                 },
             )
         };
         let open_settings_btn = {
-            let view_handle = cx.entity().clone();
+            let on_hide = self.on_hide_popover.clone();
+            let on_open = self.on_open_main.clone();
             let hover = theme.sidebar_hover_pill;
             div()
                 .id("pop-open-settings")
@@ -444,14 +483,14 @@ impl Render for PopoverView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(14.0))
-                .text_color(theme.text_secondary)
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    view_handle.update(cx, |this, cx| {
-                        (this.on_hide_popover)(cx);
-                        (this.on_open_main)(Section::Settings, cx);
+                    let on_hide = on_hide.clone();
+                    let on_open = on_open.clone();
+                    cx.defer(move |cx| {
+                        on_hide(cx);
+                        on_open(Section::Settings, cx);
                     });
                 })
                 .child(vector_icon(IconName::Settings, 14.5, theme.text_secondary))
@@ -476,20 +515,61 @@ impl Render for PopoverView {
         };
 
         let footer = div()
+            .flex_shrink_0()
+            .w_full()
             .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .pt(px(2.0))
-            .child(open_main_btn)
+            .flex_col()
+            .child(hairline(&theme))
             .child(
                 div()
+                    .w_full()
+                    .px(px(14.0))
+                    .py(px(8.0))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(6.0))
-                    .child(open_settings_btn)
-                    .child(quit_btn),
+                    .justify_between()
+                    .child(open_main_btn)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(open_settings_btn)
+                            .child(quit_btn),
+                    ),
+            )
+            .when(demo, |this| {
+                this.child(
+                    div()
+                        .px(px(14.0))
+                        .pb(px(6.0))
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted)
+                        .child(t("界面验证 · 模拟数据")),
+                )
+            });
+
+        // ── Scrollable Middle Body (prevents any clipping when banners or 3+ fans appear) ──
+        let body = div()
+            .id("popover-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .px(px(14.0))
+            .pb(px(10.0))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(9.0))
+                    .children(notice_banner)
+                    .child(temp_card)
+                    .child(fans_card)
+                    .child(control_card),
             );
 
         div()
@@ -501,22 +581,8 @@ impl Render for PopoverView {
             .overflow_hidden()
             .flex()
             .flex_col()
-            .p(px(14.0))
-            .gap(px(10.0))
             .child(header)
-            .children(notice_banner)
-            .child(temp_card)
-            .child(fans_card)
-            .child(control_card)
-            .child(hairline(&theme))
+            .child(body)
             .child(footer)
-            .when(demo, |this| {
-                this.child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(theme.text_muted)
-                        .child(t("界面验证 · 模拟数据")),
-                )
-            })
     }
 }

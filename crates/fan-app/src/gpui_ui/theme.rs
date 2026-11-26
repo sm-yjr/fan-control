@@ -71,13 +71,13 @@ impl GlassTheme {
     pub fn light() -> Self {
         Self {
             is_dark: false,
-            sidebar_bg: rgba(0xF6F6F8B8).into(),
+            sidebar_bg: rgba(0xF6F6F88C).into(),
             sidebar_border: rgba(0x00000014).into(),
             sidebar_active_pill: rgba(0x00000012).into(),
             sidebar_hover_pill: rgba(0x00000009).into(),
-            detail_bg: rgba(0xFCFCFDFA).into(),
-            popover_bg: rgba(0xF8F8FAAD).into(),
-            card_bg: rgba(0x0000000A).into(),
+            detail_bg: rgba(0xFCFCFDF0).into(),
+            popover_bg: rgba(0xF8F8FA88).into(),
+            card_bg: rgba(0x00000009).into(),
             card_border: rgba(0x00000010).into(),
             card_sheen: rgba(0xFFFFFFB8).into(),
             well_bg: rgba(0xFFFFFFE6).into(),
@@ -114,12 +114,12 @@ impl GlassTheme {
     pub fn dark() -> Self {
         Self {
             is_dark: true,
-            sidebar_bg: rgba(0x1C1C20B0).into(),
+            sidebar_bg: rgba(0x1C1C208C).into(),
             sidebar_border: rgba(0xFFFFFF16).into(),
             sidebar_active_pill: rgba(0xFFFFFF1C).into(),
             sidebar_hover_pill: rgba(0xFFFFFF0D).into(),
-            detail_bg: rgba(0x1E1E22F0).into(),
-            popover_bg: rgba(0x1E1E22B8).into(),
+            detail_bg: rgba(0x1E1E22E8).into(),
+            popover_bg: rgba(0x1E1E2290).into(),
             card_bg: rgba(0xFFFFFF0F).into(),
             card_border: rgba(0xFFFFFF16).into(),
             card_sheen: rgba(0xFFFFFF1F).into(),

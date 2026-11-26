@@ -84,12 +84,18 @@ pub fn attach_liquid_glass(window: &gpui::Window, corner_radius: f64, style: Gla
         let mask: usize = 2 | 16; // NSViewWidthSizable | NSViewHeightSizable
         let below: isize = -1; // NSWindowBelow
 
+        // Keep GPUI's Metal view synchronized with content_view bounds after any styleMask change.
+        let _: () = msg_send![ns_view, setFrame: bounds];
+        let _: () = msg_send![ns_view, setAutoresizingMask: mask];
+
         if let Some(glass_class) = AnyClass::get(c"NSGlassEffectView") {
             let alloc: *mut AnyObject = msg_send![glass_class, alloc];
             let glass: *mut AnyObject = msg_send![alloc, initWithFrame: bounds];
             if !glass.is_null() {
                 let _: () = msg_send![glass, setAutoresizingMask: mask];
-                let _: () = msg_send![glass, setCornerRadius: corner_radius];
+                if corner_radius > 0.0 {
+                    let _: () = msg_send![glass, setCornerRadius: corner_radius];
+                }
                 let raw_style: isize = match style {
                     GlassStyle::Regular => 0,
                     GlassStyle::Clear => 1,
@@ -118,11 +124,13 @@ pub fn attach_liquid_glass(window: &gpui::Window, corner_radius: f64, style: Gla
                 let _: () = msg_send![vev, setBlendingMode: 0isize];
                 // NSVisualEffectState::Active = 1
                 let _: () = msg_send![vev, setState: 1isize];
-                let _: () = msg_send![vev, setWantsLayer: true];
-                let layer: *mut AnyObject = msg_send![vev, layer];
-                if !layer.is_null() {
-                    let _: () = msg_send![layer, setCornerRadius: corner_radius];
-                    let _: () = msg_send![layer, setMasksToBounds: true];
+                if corner_radius > 0.0 {
+                    let _: () = msg_send![vev, setWantsLayer: true];
+                    let layer: *mut AnyObject = msg_send![vev, layer];
+                    if !layer.is_null() {
+                        let _: () = msg_send![layer, setCornerRadius: corner_radius];
+                        let _: () = msg_send![layer, setMasksToBounds: true];
+                    }
                 }
                 let _: () = msg_send![
                     content_view,
@@ -144,23 +152,30 @@ pub fn configure_popover_window(
     width: f64,
     height: f64,
 ) {
-    attach_liquid_glass(window, 18.0, GlassStyle::Regular);
-    let Some(ns_window) = raw_ns_window(window) else {
-        return;
-    };
-    unsafe {
-        // NSStatusWindowLevel (25) keeps the panel directly attached to the menu bar.
-        let _: () = msg_send![ns_window, setLevel: 25isize];
-        // CanJoinAllSpaces (1<<0) | Transient (1<<3) | FullScreenAuxiliary (1<<8)
-        let behavior: usize = (1 << 0) | (1 << 3) | (1 << 8);
-        let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
-        let _: () = msg_send![ns_window, setMovable: false];
-        let _: () = msg_send![ns_window, setReleasedWhenClosed: false];
+    if let Some(ns_window) = raw_ns_window(window) {
+        unsafe {
+            // Strip NSWindowStyleMask::Titled so the popup has zero titlebar chrome or double
+            // corner masks; keep NonactivatingPanel (1 << 7) so it floats smoothly over any app.
+            let mask: usize = 1 << 7; // NSWindowStyleMask::Borderless | NonactivatingPanel
+            let _: () = msg_send![ns_window, setStyleMask: mask];
+            let clear = NSColor::clearColor();
+            let _: () = msg_send![ns_window, setBackgroundColor: &*clear];
+            let _: () = msg_send![ns_window, setOpaque: false];
+            let _: () = msg_send![ns_window, setHasShadow: true];
+            // NSStatusWindowLevel (25) keeps the panel directly attached to the menu bar.
+            let _: () = msg_send![ns_window, setLevel: 25isize];
+            // CanJoinAllSpaces (1<<0) | Transient (1<<3) | FullScreenAuxiliary (1<<8)
+            let behavior: usize = (1 << 0) | (1 << 3) | (1 << 8);
+            let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+            let _: () = msg_send![ns_window, setMovable: false];
+            let _: () = msg_send![ns_window, setReleasedWhenClosed: false];
 
-        if let Some(mtm) = MainThreadMarker::new() {
-            position_popover_nswindow(mtm, ns_window, anchor_rect, width, height);
+            if let Some(mtm) = MainThreadMarker::new() {
+                position_popover_nswindow(mtm, ns_window, anchor_rect, width, height);
+            }
         }
     }
+    attach_liquid_glass(window, 18.0, GlassStyle::Regular);
 }
 
 /// Updates the floating menu bar panel's position and height while keeping its top edge anchored.
@@ -187,9 +202,22 @@ unsafe fn position_popover_nswindow(
     width: f64,
     height: f64,
 ) {
-    let visible = NSScreen::mainScreen(mtm)
-        .map(|s| s.visibleFrame())
+    // Pick the screen that contains the menu bar status item (crucial for multi-display setups).
+    let visible = anchor_rect
+        .and_then(|anchor| {
+            let cx = anchor.origin.x + anchor.size.width / 2.0;
+            let cy = anchor.origin.y + anchor.size.height / 2.0;
+            NSScreen::screens(mtm).iter().find_map(|s| {
+                let f = s.frame();
+                let in_x = cx >= f.origin.x && cx <= f.origin.x + f.size.width;
+                let in_y = cy >= f.origin.y && cy <= f.origin.y + f.size.height;
+                (in_x && in_y).then(|| s.visibleFrame())
+            })
+        })
+        .or_else(|| NSScreen::mainScreen(mtm).map(|s| s.visibleFrame()))
         .unwrap_or_else(|| NSRect::new(NSPoint::new(0., 0.), NSSize::new(1440., 900.)));
+
+    let clamped_h = height.min((visible.size.height - 16.0).max(320.0));
 
     let (x, y) = if let Some(anchor) = anchor_rect {
         let centered_x = anchor.origin.x + anchor.size.width / 2.0 - width / 2.0;
@@ -197,15 +225,16 @@ unsafe fn position_popover_nswindow(
             .max(visible.origin.x + 8.0)
             .min(visible.origin.x + visible.size.width - width - 8.0);
         let top_y = (anchor.origin.y - 6.0).min(visible.origin.y + visible.size.height - 4.0);
-        let clamped_y = (top_y - height).max(visible.origin.y + 8.0);
+        let clamped_y = (top_y - clamped_h).max(visible.origin.y + 8.0);
         (clamped_x, clamped_y)
     } else {
         let right_x = (visible.origin.x + visible.size.width - width - 16.0).max(visible.origin.x);
-        let top_y = (visible.origin.y + visible.size.height - height - 8.0).max(visible.origin.y);
+        let top_y =
+            (visible.origin.y + visible.size.height - clamped_h - 8.0).max(visible.origin.y);
         (right_x, top_y)
     };
 
-    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, clamped_h));
     let _: () = msg_send![ns_window, setFrame: frame, display: true];
 }
 

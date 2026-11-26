@@ -155,7 +155,8 @@ pub fn render_curve_editor_modal(
 
     let modal_card = glass_card(theme)
         .w(px(560.0))
-        .max_h(px(560.0))
+        .max_w(gpui::relative(0.92))
+        .max_h(gpui::relative(0.90))
         .bg(theme.detail_bg)
         .border_1()
         .border_color(theme.capsule_border)
@@ -168,6 +169,7 @@ pub fn render_curve_editor_modal(
         }])
         .p(px(18.0))
         .gap(px(12.0))
+        .overflow_hidden()
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })
