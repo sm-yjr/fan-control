@@ -494,6 +494,7 @@ pub fn matching_preset(curve: &fan_core::Curve) -> Option<CurvePreset> {
 }
 
 /// Whole numbers stay whole; anything else shows one decimal.
+#[allow(dead_code)]
 pub fn format_value(value: f64) -> String {
     let rounded = (value * 10.).round() / 10.;
     if rounded.fract() == 0. {
@@ -545,7 +546,9 @@ pub enum FanChoice {
 }
 
 impl FanChoice {
+    #[allow(dead_code)]
     pub const ALL: [FanChoice; 4] = [Self::System, Self::Smart, Self::Fixed, Self::Curve];
+    #[allow(dead_code)]
     pub fn title(self) -> &'static str {
         match self {
             Self::System => "系统默认",
@@ -845,7 +848,7 @@ pub(crate) fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(digit);

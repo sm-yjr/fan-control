@@ -15,7 +15,9 @@ Fan Control 使用 GPL-3.0-only。第三方组件保留各自许可证和版权�
 Apple Silicon M1–M5 的 CPU/GPU 温度键与分组表参考 [Stats](https://github.com/exelban/stats) 的 MIT 源码，固定于提交 `ee4265f3b9afdffebd3273cf6a83b9327ead45b5` 的 `Modules/Sensors/values.swift`。本项目仅持有精确键与分组表，按芯片代际选择，并避免沿用可能不匹配实际机器的核心编号。上游 MIT 原文与版权声明保存在 `crates/fan-platform/licenses/Stats-LICENSE.txt`，发布包随附 `Resources/Stats-LICENSE.txt`。固件聚合节点及补充诊断名称参考 [iSMC 的传感器表](https://github.com/dkorunic/iSMC/blob/6b107a39b5759fc9ac510291dff0f6f13e61b388/smc/sensors.go)，固定提交 `6b107a39b5759fc9ac510291dff0f6f13e61b388`。iSMC 源表标注 `GPL-3.0-only`、`Copyright (C) 2019 Dinko Korunic`，与本项目的 GPL-3.0-only 相容。适配后的中文精确键表在源码中注明原作者、来源和修改，GPLv3 原始许可保存在 `crates/fan-platform/licenses/iSMC-LICENSE.txt`，发布包随附 `Resources/iSMC-LICENSE.txt`。精确键、代际限制、来源分歧与只用于展示的边界见 [传感器语义说明](docs/sensor-semantics.md)。
 
 
-当前允许的 SPDX 标识仅为 `MIT`、`Apache-2.0`、`Zlib`、`BSD-2-Clause`、`BSD-3-Clause`、`ISC`、`Unlicense`、`Unicode-3.0`。集合按本项目 GPL-3.0-only 的发行要求审核；Apache-2.0 的兼容判断以 GPLv3 为前提。兼容性依据见 [GNU 许可证说明](https://www.gnu.org/licenses/license-list.html)。
+当前允许的 SPDX 标识包括 `MIT`、`MIT-0`、`Apache-2.0`、`Apache-2.0 WITH LLVM-exception`、`Zlib`、`BSD-2-Clause`、`BSD-3-Clause`、`0BSD`、`BSL-1.0`、`CC0-1.0`、`ISC`、`Unlicense`、`Unicode-3.0`、`MPL-2.0`、`NCSA`、`LGPL-2.1-or-later`、`GPL-2.0-only`。集合按本项目 GPL-3.0-only 的发行要求审核；Apache-2.0、MPL-2.0 与 LGPL-2.1-or-later 的兼容判断以 GPLv3 为前提。兼容性依据见 [GNU 许可证说明](https://www.gnu.org/licenses/license-list.html)。
+
+打包脚本调用 `fan-licenses --allow-spdx-declaration` 时，对未在 crates.io 归档中打包独立许可证文件的传递依赖，将在清单中保留其已审核的 Cargo SPDX 声明作为溯源依据；严格默认模式（不带 `--allow-spdx-declaration`）继续要求提供原文或固定上游记录。
 
 `Unlicense` 包含公共领域贡献及允许自由使用的补充许可，GNU 明确说明其与 GPL 兼容。`Unicode-3.0` 保留版权/许可声明和禁止以权利人名称做未经授权宣传的条件，GNU 明确将该版本列为与 GPL 兼容的宽松许可证；Unicode 官方也说明其基于 MIT，并区分它与 Unicode Terms of Use。[GNU Unlicense 说明](https://www.gnu.org/licenses/license-list.html#Unlicense)、[GNU Unicode v3 说明](https://www.gnu.org/licenses/license-list.html#Unicodev3)、[Unicode 官方许可政策](https://unicode.org/policies/licensing_policy.html)、[SPDX Unicode-3.0 原文](https://spdx.org/licenses/Unicode-3.0.html)。
 

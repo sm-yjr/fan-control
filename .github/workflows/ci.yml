@@ -98,7 +98,7 @@ jobs:
           hdiutil verify dist/FanControl-ci.dmg
 
   msrv:
-    name: Rust 1.85.1 minimum toolchain
+    name: Rust 1.92.0 minimum toolchain
     runs-on: macos-15
     timeout-minutes: 20
     env:
@@ -110,7 +110,7 @@ jobs:
           persist-credentials: false
 
       - name: Prepare minimum Rust toolchain
-        run: rustup toolchain install 1.85.1 --profile minimal
+        run: rustup toolchain install 1.92.0 --profile minimal
 
       - name: Test workspace with minimum Rust toolchain
-        run: cargo +1.85.1 test --locked --workspace
+        run: cargo +1.92.0 test --locked --workspace

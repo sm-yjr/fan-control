@@ -26,7 +26,7 @@ run = json.loads((p/'ci.json').read_text())
 workflow = json.loads((p/'workflow.json').read_text())
 assert run['status'] == 'completed' and run['conclusion'] == 'success'
 assert run['workflow_id'] == workflow['id']
-required = {'build (macos-15)', 'Rust 1.85.1 minimum toolchain'}
+required = {'build (macos-15)', 'Rust 1.92.0 minimum toolchain'}
 jobs = json.loads((p/'jobs.json').read_text())['jobs']
 assert required <= {j['name'] for j in jobs if j['conclusion'] == 'success'}
 subprocess.run(['git', 'fetch', 'origin', run['head_sha'], os.environ['SOURCE_SHA']], check=True)

@@ -3,9 +3,9 @@ members = ["crates/fan-core", "crates/fan-platform", "crates/fan-app", "crates/f
 resolver = "2"
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.92"
 license = "GPL-3.0-only"
 
 [profile.release]

@@ -99,6 +99,7 @@ impl Worker {
             .expect("start sensor worker");
         Self { sender, state }
     }
+    #[allow(dead_code)]
     pub fn sender(&self) -> Sender<WorkerCommand> {
         self.sender.clone()
     }

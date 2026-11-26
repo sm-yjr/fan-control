@@ -9,7 +9,7 @@
 Fan Control 的生产技术栈正在迁移到 Rust，目标仍是 macOS 14+、Apple Silicon 的菜单栏应用。主构建使用 Cargo workspace；Sources/ 中的 Swift 实现暂时保留用于迁移对照，不得将其当作 Rust 产物已实现功能的证据。完成兼容性与产品验收后再移除旧源码。
 
 - 必须能在仅安装 Command Line Tools 和 Rust 的机器上构建，无需完整 Xcode 或 Swift 宏插件。保持 MACOSX_DEPLOYMENT_TARGET=14.0；当前只接受 arm64，不能通过改元数据宣称兼容 Intel。
-- fan-core 持有硬件无关的模型、曲线、配置与安全策略；fan-platform 持有 Rust SMC/IOKit、Unix socket、helper 和租约；fan-app 使用 AppKit 原生系统控件。重复的背景、边框、圆角、字号和间距先扩展语义令牌。交互保留键盘、VoiceOver、深浅色与 Reduce Motion。
+- fan-core 持有硬件无关的模型、曲线、配置与安全策略；fan-platform 持有 Rust SMC/IOKit、Unix socket、helper 和租约；fan-app 使用 GPUI（`gpui-pre` 0.3.14 + `runtime_shaders`）与 GPUI Kit（`gpui-component` 0.11.0）渲染主窗口和菜单栏浮窗，在 macOS 26+ 上挂载原生 `NSGlassEffectView` Liquid Glass（macOS 14–15 自动降级为 `NSVisualEffectView`），并通过薄 AppKit 桥接处理状态栏图标（`NSStatusItem`）、Sparkle、登录项与系统对话框。重复的背景、边框、圆角、字号和间距先扩展语义令牌。交互保留键盘、AccessKit/VoiceOver、深浅色与 Reduce Motion。
 - FanControl 同一可执行文件兼任 GUI 和 --helper root daemon。helper 被单独复制到 /Library/PrivilegedHelperTools，主程序不得直接链接 Sparkle 或其他仅存在于 .app 内的动态框架；用独立 helper 的 otool -L 验证。
 - Sparkle 仅在 GUI 或专用 updater 诊断模式中运行时加载。固定版本和 SHA-256 位于 script/package_app.sh；升级时同时更新版本、校验值并验证独立 helper。
 - Rust helper 协议版本为 9，使用有界控制租约；协议 7 修复已接受连接继承非阻塞导致的同连接写命令失败，协议 8 让无 Ftst 的机型在直接模式写入后等待固件回读，协议 9 在交还系统后保留固件目标、禁止清零 F*Tg。修改请求格式、命令语义或需要替换已安装 helper 的实现时递增协议版本；安装或替换需要正常管理员授权，应用依靠实际 readiness 和版本一致判断可用状态。

@@ -6,6 +6,12 @@
 
 ## 迁移范围
 
+### 2026-11-26：0.7.0 GPUI + GPUI Kit + Liquid Glass 重构与登录启动修复
+
+本次在 `main` 分支完成两项更新：首先修复 `settings.rs` 中 `SMAppService.mainAppService.status` 在首次注册前返回 `SMAppServiceStatusNotFound`（3）导致“登录时启动”读取失败与无法开启的 bug（`a31fd85`）；随后将主窗口、菜单栏浮窗与曲线编辑器全面迁移至 GPUI（`gpui-pre` 0.3.14 + `runtime_shaders`、`accesskit_macos`）与 GPUI Kit（`gpui-component` 0.11.0 + `gpui-kit-assets`），在 macOS 26+ 挂载原生 `NSGlassEffectView` Liquid Glass（macOS 14–15 自动降级为 `NSVisualEffectView`），移除 17 个被替代的旧 AppKit 视图文件，保留薄 AppKit 桥接处理 `NSStatusItem`、Sparkle 动态加载、`SMAppService` 与原生系统对话框，并将 Rust MSRV 升级至 1.92.0。
+
+底层 `fan-core` 算法、SMC 读写、helper 协议 9、租约与睡眠恢复路径均未改动。本地与 CI 验证覆盖 rustfmt、Clippy（零警告）、全部 Rust 工作区测试（含 Rust 1.92.0 MSRV）、中英文 `--ui-smoke`（确认本机 `NSGlassEffectView` 可用）、`--dashboard-render`、Widget 单元测试、Developer ID 由内到外签名、独立 helper `otool -L` 隔离与 Sparkle 运行时检查。由于终端无屏幕录制权限，未在后台自动截取实机 Metal 帧；真实桌面交互、深浅色与 Liquid Glass 实机观感、键盘焦点、VoiceOver 实操、真实重启验证“登录时启动”、真实硬件写入回读及旧版自动更新实测继续保留未验证状态，不计为通过。
+
 ### 2026-11-26：0.6.1 设置页与侧边栏原生视觉精修
 
 本次在 `main` 分支对设置页、侧边栏和主窗口顶栏做原生 AppKit 视觉打磨：侧边栏改为顶部圆形状态头图搭配 22×22 彩色圆角图标、统一左基线与半透明浅灰胶囊选中态（`sidebar.rs`）；主窗口右侧移除通栏分隔线并补全动态 `windowBackgroundColor` 画布（`shell.rs`）；设置页升级为 4 枚蓝底可视化菜单栏样式卡片、14pt 柔和圆角分组卡片、0.5pt 细分隔线、单行原生 `NSSwitch` 与无边框行内语言菜单、`(i)` 脚注及 `>` 箭头导航行（`preferences.rs` / `form.rs` / `components.rs` / `theme.rs`），其余四页对齐 28pt 水平留白，并新增浅/深色设置页离屏渲染检查（`dashboard_render.rs`）。

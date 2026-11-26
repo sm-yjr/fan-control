@@ -13,7 +13,7 @@ SPARKLE_PUBLIC_KEY="/hvZor9jnQzV8BJYBLdNoyEAps0epZ1MvtMu8wq5ikg="
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-debug}"
-APP_VERSION="${APP_VERSION:-0.6.1}"
+APP_VERSION="${APP_VERSION:-0.7.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
 ARCHITECTURES="${ARCHITECTURES:-}"
@@ -147,7 +147,8 @@ MACOSX_DEPLOYMENT_TARGET="$MIN_SYSTEM_VERSION" \
   CARGO_TARGET_DIR="$ROOT_DIR/target" \
   cargo run --locked --package fan-licenses --bin fan-licenses -- \
   --metadata "$LICENSE_METADATA" \
-  --output "$APP_RESOURCES/ThirdPartyLicenses"
+  --output "$APP_RESOURCES/ThirdPartyLicenses" \
+  --allow-spdx-declaration
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

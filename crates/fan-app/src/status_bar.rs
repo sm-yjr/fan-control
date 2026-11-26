@@ -1,8 +1,8 @@
 //! Native macOS menu bar status item with optional compact live readings.
 //! Display preference is stored in NSUserDefaults so config.json remains unchanged.
 use crate::{
+    i18n::{raw_nsstring as raw_text, translated_nsstring as text},
     presenter::{FanCard, Presentation, Tone},
-    ui::{raw_text, text},
 };
 use objc2::{rc::Retained, runtime::AnyObject, sel};
 use objc2_app_kit::*;
@@ -46,6 +46,7 @@ impl MenuBarDisplayMode {
         }
     }
 
+    #[allow(dead_code)]
     pub fn title(self) -> &'static str {
         match self {
             Self::IconOnly => "仅图标",

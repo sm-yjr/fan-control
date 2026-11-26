@@ -4,6 +4,7 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let mut metadata = None;
     let mut output = None;
+    let mut allow_spdx_declaration = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--metadata") if metadata.is_none() => {
@@ -14,9 +15,12 @@ fn run() -> Result<(), String> {
             Some("--output") if output.is_none() => {
                 output = Some(PathBuf::from(args.next().ok_or("missing output argument")?));
             }
+            Some("--allow-spdx-declaration") => {
+                allow_spdx_declaration = true;
+            }
             Some("--help") => {
                 println!(
-                    "fan-licenses --metadata <cargo-metadata.json> --output <empty-directory>"
+                    "fan-licenses --metadata <cargo-metadata.json> --output <empty-directory> [--allow-spdx-declaration]"
                 );
                 return Ok(());
             }
@@ -26,7 +30,7 @@ fn run() -> Result<(), String> {
     let metadata = metadata.ok_or("--metadata is required")?;
     let output = output.ok_or("--output is required")?;
     let bytes = std::fs::read(metadata).map_err(|_| "cannot read Cargo metadata")?;
-    let count = fan_licenses::collect(&bytes, &output)?;
+    let count = fan_licenses::collect_with_options(&bytes, &output, allow_spdx_declaration)?;
     println!("Collected original license materials for {count} registry packages.");
     Ok(())
 }

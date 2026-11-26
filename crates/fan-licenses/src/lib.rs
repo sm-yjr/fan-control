@@ -135,25 +135,39 @@ impl<'a> Parser<'a> {
             }
             return Ok(inner);
         }
-        let identifier = self
+        let identifier = *self
             .tokens
             .get(self.position)
             .ok_or("incomplete SPDX expression")?;
         if !matches!(
-            *identifier,
+            identifier,
             "MIT"
+                | "MIT-0"
                 | "Apache-2.0"
                 | "Zlib"
+                | "0BSD"
                 | "BSD-2-Clause"
                 | "BSD-3-Clause"
+                | "BSL-1.0"
+                | "CC0-1.0"
                 | "ISC"
                 | "Unlicense"
                 | "Unicode-3.0"
+                | "NCSA"
+                | "MPL-2.0"
+                | "LGPL-2.1-or-later"
+                | "GPL-2.0-only"
         ) {
             return Err("unsupported or malformed SPDX license identifier".into());
         }
         self.position += 1;
-        Ok(Expression::License((*identifier).to_owned()))
+        if self.consume("WITH") {
+            if identifier == "Apache-2.0" && self.consume("LLVM-exception") {
+                return Ok(Expression::License("Apache-2.0 WITH LLVM-exception".into()));
+            }
+            return Err("unsupported or malformed SPDX license exception".into());
+        }
+        Ok(Expression::License(identifier.to_owned()))
     }
 
     fn consume(&mut self, token: &str) -> bool {
@@ -396,6 +410,7 @@ fn package_materials(
     package: &Package,
     sources: &Sources,
     vendor: &Path,
+    allow_spdx_fallback: bool,
 ) -> Result<Vec<Material>, String> {
     let root = package
         .manifest_path
@@ -420,7 +435,25 @@ fn package_materials(
         }) {
             return Err("original license files missing for reviewed legacy expression".into());
         }
-        return pinned_materials(package, root, sources, vendor);
+        match pinned_materials(package, root, sources, vendor) {
+            Ok(pinned) => return Ok(pinned),
+            Err(err) => {
+                if allow_spdx_fallback {
+                    if let Some(spdx) = package.license.as_deref() {
+                        let notice = format!(
+                            "{} {}\nSPDX-License-Identifier: {spdx}\n(Published crates.io archive did not include a standalone LICENSE file.)\n",
+                            package.name, package.version
+                        );
+                        return Ok(vec![Material {
+                            relative: PathBuf::from("SPDX-DECLARATION.txt"),
+                            bytes: notice.into_bytes(),
+                            source_url: None,
+                        }]);
+                    }
+                }
+                return Err(err);
+            }
+        }
     }
     let mut materials: Vec<Material> = files
         .into_iter()
@@ -449,24 +482,47 @@ fn package_materials(
 /// Existing nonempty output directories are rejected to avoid replacing files
 /// unrelated to this collector. Collection and validation precede all writes.
 pub fn collect(metadata: &[u8], output: &Path) -> Result<usize, String> {
+    collect_with_options(metadata, output, false)
+}
+
+/// Variant of [`collect`] that allows generating an `SPDX-DECLARATION.txt` record when
+/// a registry crate declares a reviewed SPDX expression but omits a standalone license
+/// file from its published archive.
+pub fn collect_with_options(
+    metadata: &[u8],
+    output: &Path,
+    allow_spdx_fallback: bool,
+) -> Result<usize, String> {
     let sources: Sources =
         serde_json::from_str(VENDORED_SOURCES).map_err(|_| "invalid vendored source index")?;
     if sources.format_version != 1 {
         return Err("unsupported vendored source index version".into());
     }
-    collect_with_sources(
+    collect_with_sources_opts(
         metadata,
         output,
         &sources,
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("licenses"),
+        allow_spdx_fallback,
     )
 }
 
+#[cfg(test)]
 fn collect_with_sources(
     metadata: &[u8],
     output: &Path,
     sources: &Sources,
     vendor: &Path,
+) -> Result<usize, String> {
+    collect_with_sources_opts(metadata, output, sources, vendor, false)
+}
+
+fn collect_with_sources_opts(
+    metadata: &[u8],
+    output: &Path,
+    sources: &Sources,
+    vendor: &Path,
+    allow_spdx_fallback: bool,
 ) -> Result<usize, String> {
     let metadata: Metadata =
         serde_json::from_slice(metadata).map_err(|_| "invalid Cargo metadata document")?;
@@ -523,11 +579,26 @@ fn collect_with_sources(
                 })
                 .transpose()?
                 .flatten();
-            let expression = parse_expression(reviewed_expression.as_deref().unwrap_or(license))?;
+            let normalized_legacy = if reviewed_expression.is_none() && license.contains('/') {
+                Some(
+                    license
+                        .split('/')
+                        .map(str::trim)
+                        .collect::<Vec<_>>()
+                        .join(" OR "),
+                )
+            } else {
+                None
+            };
+            let effective_expr = reviewed_expression
+                .as_deref()
+                .or(normalized_legacy.as_deref())
+                .unwrap_or(license);
+            let expression = parse_expression(effective_expr)?;
             let mut reviewed = BTreeSet::new();
             identifiers(&expression, &mut reviewed);
             let mut files = Vec::new();
-            for material in package_materials(&package, sources, vendor)? {
+            for material in package_materials(&package, sources, vendor, allow_spdx_fallback)? {
                 let relative = Path::new(&name).join(&version).join(material.relative);
                 let file = relative
                     .to_str()

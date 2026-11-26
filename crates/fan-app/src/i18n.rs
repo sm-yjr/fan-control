@@ -103,6 +103,14 @@ pub fn translate(value: &str) -> String {
     translate_for(current_language(), value)
 }
 
+pub fn raw_nsstring(value: &str) -> objc2::rc::Retained<objc2_foundation::NSString> {
+    objc2_foundation::NSString::from_str(value)
+}
+
+pub fn translated_nsstring(value: &str) -> objc2::rc::Retained<objc2_foundation::NSString> {
+    objc2_foundation::NSString::from_str(&translate(value))
+}
+
 /// Explicit language, independent of process-global overrides (useful for tests).
 pub fn translate_for(language: Lang, value: &str) -> String {
     let language = if language == Lang::System {
@@ -683,6 +691,30 @@ const CATALOG: &[Text] = texts![
     ("应用退出、失联或电脑睡眠时会自动交还 macOS；移除服务后仍可查看温度，你的设置会保留。", "Fans return to macOS automatically on quit, disconnect, or sleep. After removal, temperatures remain visible and settings are kept."),
     ("支持与关于", "Support & About"),
     ("导出诊断信息", "Export diagnostics"),
+    ("性能", "Performance preset"),
+    ("编辑温度曲线", "Edit temperature curve"),
+    ("控制点", "Curve control points"),
+    ("应用到所有风扇", "Apply curve to all fans"),
+    ("应用", "Apply changes"),
+    ("热负荷", "Thermal demand"),
+    ("未检测到可控风扇", "No controllable fans detected"),
+    ("电源与电池", "Power & Battery"),
+    ("控制模式", "Control Mode"),
+    ("温度与风扇", "Temperature & Fans"),
+    ("当前设备未检测到可控风扇。", "No controllable fans were detected on this Mac."),
+    ("目标转速", "Target fan speed"),
+    ("按自定义温度曲线平滑调节转速。", "Adjusts fan speed smoothly along your custom temperature curve."),
+    ("键盘体感目标与两点校准", "Keyboard Comfort Target & Two-Point Calibration"),
+    ("默认 38°C", "Default 38°C"),
+    ("需同设备外部两点校准且处于有效范围时生效。", "Applies only with valid two-point external calibration on this Mac."),
+    ("体感目标温度", "Comfort target temperature"),
+    ("默认 38°C，超过校准上限时自动保持保守散热下界。", "Defaults to 38°C; above the calibration ceiling a conservative cooling floor is maintained."),
+    ("调整散热偏好后立即生效并自动保存；持续负载下会提前平缓介入，热量消散后自动交还系统。", "Cooling preference saves immediately; engages smoothly under sustained load and returns control once heat dissipates."),
+    ("高级", "Advanced"),
+    ("没有匹配的传感器读数。", "No matching sensor readings."),
+    ("当前选择", "Current selection"),
+    ("已保存散热偏好。", "Cooling preference saved."),
+    ("正在保存…", "Saving preference…"),
 ];
 
 #[derive(Clone, Copy)]
@@ -1274,26 +1306,28 @@ mod tests {
             "未获",
         ];
         for (file, source) in [
-            ("ui.rs", include_str!("ui.rs")),
+            ("gpui_ui/mod.rs", include_str!("gpui_ui/mod.rs")),
+            ("gpui_ui/glass.rs", include_str!("gpui_ui/glass.rs")),
+            (
+                "gpui_ui/primitives.rs",
+                include_str!("gpui_ui/primitives.rs"),
+            ),
+            ("gpui_ui/charts.rs", include_str!("gpui_ui/charts.rs")),
+            ("gpui_ui/state.rs", include_str!("gpui_ui/state.rs")),
+            ("gpui_ui/popover.rs", include_str!("gpui_ui/popover.rs")),
+            (
+                "gpui_ui/main_window.rs",
+                include_str!("gpui_ui/main_window.rs"),
+            ),
+            (
+                "gpui_ui/curve_editor.rs",
+                include_str!("gpui_ui/curve_editor.rs"),
+            ),
             ("worker.rs", include_str!("worker.rs")),
             ("settings.rs", include_str!("settings.rs")),
-            ("chart.rs", include_str!("chart.rs")),
             ("presenter.rs", include_str!("presenter.rs")),
-            ("popover.rs", include_str!("popover.rs")),
-            ("overview.rs", include_str!("overview.rs")),
             ("trend.rs", include_str!("trend.rs")),
-            ("fans.rs", include_str!("fans.rs")),
-            ("details.rs", include_str!("details.rs")),
-            ("form.rs", include_str!("form.rs")),
-            ("gauge.rs", include_str!("gauge.rs")),
-            ("preferences.rs", include_str!("preferences.rs")),
-            ("theme.rs", include_str!("theme.rs")),
-            ("components.rs", include_str!("components.rs")),
             ("status_bar.rs", include_str!("status_bar.rs")),
-            ("sidebar.rs", include_str!("sidebar.rs")),
-            ("shell.rs", include_str!("shell.rs")),
-            ("curve_editor.rs", include_str!("curve_editor.rs")),
-            ("dashboard.rs", include_str!("dashboard.rs")),
             ("sensor_list.rs", include_str!("sensor_list.rs")),
         ] {
             check_source_coverage(
@@ -1319,19 +1353,6 @@ mod tests {
             check_source_coverage(
                 file,
                 source.split("#[cfg(test)]").next().unwrap_or(source),
-                &preserved_names,
-            );
-        }
-        // policy.rs is being added independently. Read it when present so its
-        // latest product messages are checked without changing other modules.
-        let manifest = option_env!("CARGO_MANIFEST_DIR").unwrap_or("crates/fan-app");
-        let policy = std::path::Path::new(manifest).join("src/policy.rs");
-        if policy.exists() {
-            let source =
-                std::fs::read_to_string(policy).expect("read policy source for catalog audit");
-            check_source_coverage(
-                "policy.rs",
-                source.split("#[cfg(test)]").next().unwrap_or(&source),
                 &preserved_names,
             );
         }
