@@ -662,16 +662,17 @@ define_class!(
                 ui.details.refresh(&state, fresh(&state));
             }
         }
-        #[unsafe(method(menuBarDisplay:))]
-        fn menu_bar_display(&self, sender: &NSPopUpButton) {
+        #[unsafe(method(menuBarTileSelected:))]
+        fn menu_bar_tile_selected(&self, index: isize) {
             let Some(mode) = MenuBarDisplayMode::ALL
-                .get(sender.indexOfSelectedItem().max(0) as usize)
+                .get(index.max(0) as usize)
                 .copied()
             else {
                 return;
             };
             if let Some(ui) = self.ivars().ui.borrow_mut().as_mut() {
                 ui.status.set_mode(mode, ui.demo);
+                ui.settings.set_menu_bar_mode(mode);
                 let state = ui.worker.snapshot();
                 let is_fresh = fresh(&state);
                 let view = crate::presenter::present(&state, is_fresh, ui.demo);
@@ -1132,10 +1133,11 @@ impl Ui {
         self.shell.window.displayIfNeeded();
         self.verify_policy_flow(delegate);
 
-        // 5. Verify Settings page and menu bar display modes.
+        // 5. Verify Settings page and menu bar visual picker modes.
         self.open_preferences();
         for mode in MenuBarDisplayMode::ALL {
             self.status.set_mode(mode, true);
+            self.settings.set_menu_bar_mode(mode);
             let state = self.worker.snapshot();
             let view = crate::presenter::present(&state, fresh(&state), true);
             let cards = crate::presenter::fan_cards(&state, fresh(&state));

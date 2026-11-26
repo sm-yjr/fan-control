@@ -6,6 +6,12 @@
 
 ## 迁移范围
 
+### 2026-11-26：0.6.1 设置页与侧边栏原生视觉精修
+
+本次在 `main` 分支对设置页、侧边栏和主窗口顶栏做原生 AppKit 视觉打磨：侧边栏改为顶部圆形状态头图搭配 22×22 彩色圆角图标、统一左基线与半透明浅灰胶囊选中态（`sidebar.rs`）；主窗口右侧移除通栏分隔线并补全动态 `windowBackgroundColor` 画布（`shell.rs`）；设置页升级为 4 枚蓝底可视化菜单栏样式卡片、14pt 柔和圆角分组卡片、0.5pt 细分隔线、单行原生 `NSSwitch` 与无边框行内语言菜单、`(i)` 脚注及 `>` 箭头导航行（`preferences.rs` / `form.rs` / `components.rs` / `theme.rs`），其余四页对齐 28pt 水平留白，并新增浅/深色设置页离屏渲染检查（`dashboard_render.rs`）。
+
+底层 `fan-core` 算法、SMC 读写、helper 协议 9、租约与睡眠恢复路径均未改动。本地与 CI 验证覆盖 rustfmt、Clippy、全部 Rust 工作区测试（含 1.85.1 MSRV）、中英文 `--ui-smoke`（含 4 种菜单栏样式卡片切换与 5 页零宽度漂移）、`--dashboard-render`、Widget 单元测试、Developer ID 由内到外签名、独立 helper `otool -L` 隔离与 Sparkle 运行时检查。真实桌面浅/深色交互、键盘焦点、VoiceOver 实操、真实硬件写入回读及旧版自动更新实测未新增实机记录，继续保留未验证状态，不计为通过。
+
 ### 2026-11-26：0.6.0 全量 UI/UX Overhaul
 
 本次在 `main` 分支完成全量原生 AppKit UI/UX 改造：新增统一语义设计令牌（`theme.rs`）与动态分层卡片/徽章/折叠组件（`components.rs`）；新增状态栏可选实时读数（`status_bar.rs`，偏好存于 `NSUserDefaults`，不改动 `config.json`）；菜单栏面板重构为分层卡片并按模式折叠无关控件；主窗口由固定 `620pt` 顶部 Tab 重构为 `NSSplitViewController` 磨砂侧边栏可缩放窗口（`shell.rs` / `sidebar.rs`）；“概览”“风扇”“智能散热”“温度详情”“设置”与曲线编辑器（`curve_editor.rs`）全面升级为 Auto Layout、统一 180° RPM 弧形表盘、即时保存偏好、可折叠两点校准、可拉伸筛选/排序传感器表与就地更新无闪烁曲线编辑；同步对齐桌面小组件高温色温与趋势端点样式，并补齐中英文词条与源码覆盖率测试。

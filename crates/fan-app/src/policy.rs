@@ -169,7 +169,7 @@ impl PolicyEditor {
         view.addArrangedSubview(&hero_box);
         hero_box
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         let how = fluid_caption(
@@ -259,7 +259,7 @@ impl PolicyEditor {
         view.addArrangedSubview(&preference_card);
         preference_card
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         let pref_caption = fluid_caption(
@@ -438,7 +438,7 @@ impl PolicyEditor {
         calibration_disclosure
             .view
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         let mut editor = Self {

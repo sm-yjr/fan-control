@@ -1,26 +1,226 @@
-//! Settings page: fluid System Settings-style grouped cards for general options,
-//! menu bar readout, the fan control service and support.
+//! Settings page styled after modern macOS System Settings: visual menu-bar
+//! picker cards with selection rings, uncluttered single-line grouped rows,
+//! borderless inline pickers, chevron actions, and `(i)` footnotes.
 use crate::{
-    components::{hstack, SurfaceView},
-    form::{self, fluid_caption, fluid_group, fluid_page, fluid_row, section_title},
+    components::{chevron_button, hstack, info_footnote, label, vstack, StatusBadge},
+    form::{
+        self, fluid_caption, fluid_group, fluid_page, settings_row, settings_section_title,
+        PAGE_INSET,
+    },
+    presenter::Tone,
     status_bar::MenuBarDisplayMode,
-    theme::spacing,
-    ui::text,
+    theme::{self, spacing, typography},
+    ui::{raw_text, text},
 };
-use objc2::{rc::Retained, runtime::AnyObject, sel, MainThreadOnly};
+use objc2::{
+    define_class, msg_send, rc::Retained, runtime::AnyObject, sel, AnyThread, DefinedClass,
+    MainThreadOnly, Message,
+};
 use objc2_app_kit::*;
-use objc2_foundation::MainThreadMarker;
+use objc2_foundation::{MainThreadMarker, NSEdgeInsets, NSPoint, NSRect, NSSize};
+use std::cell::{Cell, RefCell};
+
+struct PreviewTileIvars {
+    mode: Cell<MenuBarDisplayMode>,
+    selected: Cell<bool>,
+    target: RefCell<Option<Retained<AnyObject>>>,
+}
+
+define_class!(
+    /// Visual macOS Settings-style thumbnail card for selecting menu bar display mode.
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = PreviewTileIvars]
+    struct MenuBarPreviewCard;
+    impl MenuBarPreviewCard {
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, _event: &NSEvent) {
+            let idx = MenuBarDisplayMode::ALL
+                .iter()
+                .position(|m| *m == self.ivars().mode.get())
+                .unwrap_or(0) as isize;
+            if let Some(target) = self.ivars().target.borrow().as_ref() {
+                let _: () = unsafe { msg_send![&**target, menuBarTileSelected: idx] };
+            }
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let selected = self.ivars().selected.get();
+
+            // Outer blue double-ring when selected (matches macOS Settings Appearance tiles).
+            if selected {
+                let ring_rect = NSRect::new(
+                    NSPoint::new(b.origin.x + 1.5, b.origin.y + 1.5),
+                    NSSize::new((b.size.width - 3.0).max(0.), (b.size.height - 3.0).max(0.)),
+                );
+                let ring = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ring_rect, 13.0, 13.0);
+                ring.setLineWidth(2.4);
+                NSColor::controlAccentColor().setStroke();
+                ring.stroke();
+            }
+
+            // Inner wallpaper thumbnail with blue macOS glass gradient.
+            let pad = 4.5;
+            let card_rect = NSRect::new(
+                NSPoint::new(b.origin.x + pad, b.origin.y + pad),
+                NSSize::new(
+                    (b.size.width - pad * 2.0).max(0.),
+                    (b.size.height - pad * 2.0).max(0.),
+                ),
+            );
+            let card = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(card_rect, 9.5, 9.5);
+            let top = NSColor::colorWithSRGBRed_green_blue_alpha(0.14, 0.57, 0.99, 1.0);
+            let bottom = NSColor::colorWithSRGBRed_green_blue_alpha(0.04, 0.35, 0.80, 1.0);
+            if let Some(grad) =
+                NSGradient::initWithStartingColor_endingColor(NSGradient::alloc(), &top, &bottom)
+            {
+                grad.drawInBezierPath_angle(&card, -65.0);
+            } else {
+                top.setFill();
+                card.fill();
+            }
+
+            // Soft diagonal light reflection ribbons inside the wallpaper.
+            NSGraphicsContext::saveGraphicsState_class();
+            card.addClip();
+            let sheen = NSBezierPath::bezierPath();
+            sheen.moveToPoint(NSPoint::new(card_rect.origin.x + card_rect.size.width * 0.22, card_rect.origin.y));
+            sheen.lineToPoint(NSPoint::new(card_rect.origin.x + card_rect.size.width * 0.70, card_rect.origin.y + card_rect.size.height));
+            sheen.lineToPoint(NSPoint::new(card_rect.origin.x + card_rect.size.width, card_rect.origin.y + card_rect.size.height));
+            sheen.lineToPoint(NSPoint::new(card_rect.origin.x + card_rect.size.width * 0.62, card_rect.origin.y));
+            sheen.closePath();
+            NSColor::whiteColor().colorWithAlphaComponent(0.14).setFill();
+            sheen.fill();
+
+            let facet = NSBezierPath::bezierPath();
+            facet.moveToPoint(NSPoint::new(card_rect.origin.x, card_rect.origin.y));
+            facet.lineToPoint(NSPoint::new(card_rect.origin.x + card_rect.size.width * 0.36, card_rect.origin.y + card_rect.size.height));
+            facet.lineToPoint(NSPoint::new(card_rect.origin.x, card_rect.origin.y + card_rect.size.height));
+            facet.closePath();
+            NSColor::whiteColor().colorWithAlphaComponent(0.08).setFill();
+            facet.fill();
+
+            // Translucent macOS menu bar strip across the top of the mini desktop.
+            let bar_h = 22.0;
+            let bar_rect = NSRect::new(
+                NSPoint::new(card_rect.origin.x, card_rect.origin.y + card_rect.size.height - bar_h),
+                NSSize::new(card_rect.size.width, bar_h),
+            );
+            NSColor::whiteColor().colorWithAlphaComponent(0.88).setFill();
+            NSBezierPath::fillRect(bar_rect);
+
+            // Mini desktop glass window card silhouette below menu bar.
+            let win_rect = NSRect::new(
+                NSPoint::new(card_rect.origin.x + 12.0, card_rect.origin.y + 6.0),
+                NSSize::new(card_rect.size.width - 24.0, (card_rect.size.height - bar_h - 12.0).max(8.0)),
+            );
+            let win = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(win_rect, 5.0, 5.0);
+            NSColor::whiteColor().colorWithAlphaComponent(0.24).setFill();
+            win.fill();
+            NSColor::whiteColor().colorWithAlphaComponent(0.32).setStroke();
+            win.setLineWidth(0.5);
+            win.stroke();
+            NSGraphicsContext::restoreGraphicsState_class();
+
+            // Subtle inner border around thumbnail.
+            NSColor::blackColor().colorWithAlphaComponent(0.10).setStroke();
+            card.setLineWidth(0.5);
+            card.stroke();
+        }
+    }
+);
+
+impl MenuBarPreviewCard {
+    fn new(
+        mtm: MainThreadMarker,
+        mode: MenuBarDisplayMode,
+        selected: bool,
+        target: &AnyObject,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(PreviewTileIvars {
+            mode: Cell::new(mode),
+            selected: Cell::new(selected),
+            target: RefCell::new(Some(target.retain())),
+        });
+        let view: Retained<Self> = unsafe { msg_send![super(this), init] };
+        view.setTranslatesAutoresizingMaskIntoConstraints(false);
+        view.widthAnchor()
+            .constraintEqualToConstant(116.0)
+            .setActive(true);
+        view.heightAnchor()
+            .constraintEqualToConstant(62.0)
+            .setActive(true);
+        view.setAccessibilityElement(true);
+        view.setAccessibilityLabel(Some(&text(mode.title())));
+
+        // Mini menu bar live pill preview anchored inside the top frosted bar.
+        let pill_row = hstack(mtm, 3.0);
+        pill_row.setTranslatesAutoresizingMaskIntoConstraints(false);
+        if let Some(icon) = theme::symbol_image("fanblades.fill", None, 9.5) {
+            let img = NSImageView::imageViewWithImage(&icon, mtm);
+            img.setContentTintColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                0.10, 0.12, 0.16, 0.90,
+            )));
+            pill_row.addArrangedSubview(&img);
+        }
+        let sample = match mode {
+            MenuBarDisplayMode::IconOnly => "",
+            MenuBarDisplayMode::Temperature => "54°",
+            MenuBarDisplayMode::FanSpeed => "2.4k",
+            MenuBarDisplayMode::TemperatureAndFan => "54°·2.4k",
+        };
+        if !sample.is_empty() {
+            let digits = NSTextField::labelWithString(&raw_text(sample), mtm);
+            digits.setFont(Some(&theme::rounded_digits(9.5, unsafe {
+                NSFontWeightSemibold
+            })));
+            digits.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                0.10, 0.12, 0.16, 0.90,
+            )));
+            pill_row.addArrangedSubview(&digits);
+        }
+        view.addSubview(&pill_row);
+        pill_row
+            .centerXAnchor()
+            .constraintEqualToAnchor(&view.centerXAnchor())
+            .setActive(true);
+        pill_row
+            .topAnchor()
+            .constraintEqualToAnchor_constant(&view.topAnchor(), 9.0)
+            .setActive(true);
+        view
+    }
+
+    fn set_selected(&self, selected: bool) {
+        if self.ivars().selected.get() != selected {
+            self.ivars().selected.set(selected);
+            self.setNeedsDisplay(true);
+        }
+    }
+}
+
+struct PickerOption {
+    mode: MenuBarDisplayMode,
+    preview: Retained<MenuBarPreviewCard>,
+    caption: Retained<NSTextField>,
+}
 
 pub(crate) struct SettingsPage {
     pub view: Retained<NSStackView>,
     pub login: Retained<NSSwitch>,
     pub message: Retained<NSTextField>,
-    service: form::Row,
+    picker_options: Vec<PickerOption>,
+    service_badge: StatusBadge,
     pub install: Retained<NSButton>,
     pub configuration_notice: Retained<NSTextField>,
     pub update: Retained<NSButton>,
-    /// Groups followed by a caption that is hidden when empty.
-    captioned: [(Retained<SurfaceView>, Retained<NSTextField>); 2],
 }
 
 fn push(
@@ -29,9 +229,29 @@ fn push(
     target: &AnyObject,
     action: objc2::runtime::Sel,
 ) -> Retained<NSButton> {
-    unsafe {
+    let btn = unsafe {
         NSButton::buttonWithTitle_target_action(&text(title), Some(target), Some(action), mtm)
-    }
+    };
+    btn.setControlSize(NSControlSize::Regular);
+    btn
+}
+
+fn subtle_action(
+    mtm: MainThreadMarker,
+    title: &str,
+    target: &AnyObject,
+    action: objc2::runtime::Sel,
+) -> Retained<NSButton> {
+    let btn = unsafe {
+        NSButton::buttonWithTitle_target_action(&text(title), Some(target), Some(action), mtm)
+    };
+    btn.setBordered(false);
+    btn.setFont(Some(&NSFont::systemFontOfSize_weight(
+        typography::BODY,
+        unsafe { NSFontWeightRegular },
+    )));
+    btn.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+    btn
 }
 
 fn destructive(mtm: MainThreadMarker, title: &str, target: &AnyObject) -> Retained<NSButton> {
@@ -53,11 +273,70 @@ fn destructive(mtm: MainThreadMarker, title: &str, target: &AnyObject) -> Retain
     button
 }
 
+fn short_mode_label(mode: MenuBarDisplayMode) -> &'static str {
+    match mode {
+        MenuBarDisplayMode::IconOnly => "仅图标",
+        MenuBarDisplayMode::Temperature => "芯片温度",
+        MenuBarDisplayMode::FanSpeed => "最高转速",
+        MenuBarDisplayMode::TemperatureAndFan => "温度与转速",
+    }
+}
+
 impl SettingsPage {
     pub fn new(mtm: MainThreadMarker, target: &AnyObject, demo: bool) -> Self {
         let view = fluid_page(mtm);
+        view.setSpacing(spacing::SM);
 
-        view.addArrangedSubview(&section_title(mtm, "通用"));
+        // ── Section 1: 外观与通用（Visual Menu Bar Picker + Launch at Login + Language）──
+        view.addArrangedSubview(&settings_section_title(mtm, "外观与通用", 0.0));
+
+        let current_display = MenuBarDisplayMode::load(demo);
+        let picker_block = vstack(mtm, 8.0);
+        picker_block.addArrangedSubview(&label(
+            mtm,
+            "菜单栏显示",
+            typography::CAPTION,
+            unsafe { NSFontWeightMedium },
+            true,
+            false,
+        ));
+        let tiles_row = hstack(mtm, spacing::MD);
+        tiles_row.setDistribution(NSStackViewDistribution::EqualSpacing);
+        tiles_row.setAlignment(NSLayoutAttribute::Top);
+        let mut picker_options = Vec::new();
+        for mode in MenuBarDisplayMode::ALL {
+            let selected = mode == current_display;
+            let col = vstack(mtm, 5.0);
+            col.setAlignment(NSLayoutAttribute::CenterX);
+            let preview = MenuBarPreviewCard::new(mtm, mode, selected, target);
+            let caption = label(
+                mtm,
+                short_mode_label(mode),
+                typography::SMALL,
+                if selected {
+                    unsafe { NSFontWeightSemibold }
+                } else {
+                    unsafe { NSFontWeightRegular }
+                },
+                !selected,
+                false,
+            );
+            caption.setAlignment(NSTextAlignment::Center);
+            col.addArrangedSubview(&preview);
+            col.addArrangedSubview(&caption);
+            tiles_row.addArrangedSubview(&col);
+            picker_options.push(PickerOption {
+                mode,
+                preview,
+                caption,
+            });
+        }
+        picker_block.addArrangedSubview(&tiles_row);
+        tiles_row
+            .widthAnchor()
+            .constraintEqualToAnchor(&picker_block.widthAnchor())
+            .setActive(true);
+
         let login = NSSwitch::new(mtm);
         unsafe {
             login.setTarget(Some(target));
@@ -75,45 +354,15 @@ impl SettingsPage {
             NSControlStateValueOff
         });
         login.setAccessibilityLabel(Some(&text("登录时启动 Fan Control")));
-        let login_row = fluid_row(
-            mtm,
-            "登录时启动",
-            "开机登录后自动在菜单栏运行，继续使用你的散热设置。",
-            &[&login],
-        );
+        let (login_row, _) = settings_row(mtm, "登录时启动", &[&login]);
 
-        let menu_bar_display = NSPopUpButton::initWithFrame_pullsDown(
-            NSPopUpButton::alloc(mtm),
-            crate::ui::rect(0., 0., 170., 26.),
-            false,
-        );
-        for mode in MenuBarDisplayMode::ALL {
-            menu_bar_display.addItemWithTitle(&text(mode.title()));
-        }
-        let current_display = MenuBarDisplayMode::load(demo);
-        if let Some(index) = MenuBarDisplayMode::ALL
-            .iter()
-            .position(|m| *m == current_display)
-        {
-            menu_bar_display.selectItemAtIndex(index as isize);
-        }
-        menu_bar_display.setAccessibilityLabel(Some(&text("菜单栏显示")));
-        unsafe {
-            menu_bar_display.setTarget(Some(target));
-            menu_bar_display.setAction(Some(sel!(menuBarDisplay:)));
-        }
-        let menu_bar_row = fluid_row(
-            mtm,
-            "菜单栏显示",
-            "在状态栏图标旁可选展示实时芯片温度或最高转速。",
-            &[&menu_bar_display],
-        );
-
+        // Borderless inline pop-up picker matching macOS Settings ("Always show ⌄").
         let language = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            crate::ui::rect(0., 0., 170., 26.),
+            crate::ui::rect(0., 0., 140., 24.),
             false,
         );
+        language.setBordered(false);
         for title in ["跟随系统", "简体中文", "English"] {
             language.addItemWithTitle(&text(title));
         }
@@ -128,16 +377,31 @@ impl SettingsPage {
             language.setTarget(Some(target));
             language.setAction(Some(sel!(language:)));
         }
-        let language_row = fluid_row(mtm, "界面语言", "重新打开应用后生效。", &[&language]);
-        let general = fluid_group(
-            mtm,
-            &[&login_row.view, &menu_bar_row.view, &language_row.view],
-        );
+        let (language_row, _) = settings_row(mtm, "界面语言", &[&language]);
+
+        let general = fluid_group(mtm, &[&picker_block, &login_row, &language_row]);
         view.addArrangedSubview(&general);
         general
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
             .setActive(true);
+
+        let (general_note_row, _) = info_footnote(
+            mtm,
+            "开机后自动在菜单栏运行；切换界面语言需重新打开应用生效。",
+        );
+        general_note_row.setEdgeInsets(NSEdgeInsets {
+            top: 2.,
+            left: 6.,
+            bottom: 0.,
+            right: 6.,
+        });
+        view.addArrangedSubview(&general_note_row);
+        general_note_row
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
+            .setActive(true);
+
         let message = fluid_caption(
             mtm,
             &login_status
@@ -147,125 +411,136 @@ impl SettingsPage {
         view.addArrangedSubview(&message);
         view.setCustomSpacing_afterView(form::SECTION_GAP, &message);
 
-        view.addArrangedSubview(&section_title(mtm, "风扇控制服务"));
+        // ── Section 2: 风扇控制服务 ──
+        view.addArrangedSubview(&settings_section_title(mtm, "风扇控制服务", 14.0));
+        let service_badge = StatusBadge::new(mtm, "正在检查…", Tone::Info);
         let install = push(mtm, "启用…", target, sel!(install:));
         install.setEnabled(!demo);
-        let retry = push(mtm, "重新检测", target, sel!(retry:));
-        let service = fluid_row(mtm, "正在检查…", "", &[&install, &retry]);
-        service
-            .title
-            .setFont(Some(&NSFont::systemFontOfSize_weight(form::BODY, unsafe {
-                NSFontWeightSemibold
-            })));
-        let reset_row = fluid_row(
+        let retry = subtle_action(mtm, "重新检测", target, sel!(retry:));
+        let (service_row, _) = settings_row(
             mtm,
-            "立即交还系统",
-            "所有风扇马上回到 macOS 自动控制，直到你再次选择散热方式。",
-            &[&push(mtm, "全部交还", target, sel!(reset:))],
+            "控制服务状态",
+            &[&service_badge.view, &install, &retry],
         );
+
+        let reset_btn = push(mtm, "全部交还", target, sel!(reset:));
+        let (reset_row, _) = settings_row(mtm, "立即交还系统", &[&reset_btn]);
+
         let uninstall = destructive(mtm, "移除…", target);
         uninstall.setEnabled(!demo);
-        let uninstall_row = fluid_row(
-            mtm,
-            "移除控制服务",
-            "需要管理员授权。移除后仍可查看温度，你的设置会保留。",
-            &[&uninstall],
-        );
-        let service_group =
-            fluid_group(mtm, &[&service.view, &reset_row.view, &uninstall_row.view]);
+        let (uninstall_row, _) = settings_row(mtm, "移除控制服务", &[&uninstall]);
+
+        let service_group = fluid_group(mtm, &[&service_row, &reset_row, &uninstall_row]);
         view.addArrangedSubview(&service_group);
         service_group
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
             .setActive(true);
+
+        let (service_note_row, _) = info_footnote(
+            mtm,
+            "应用退出、失联或电脑睡眠时会自动交还 macOS；移除服务后仍可查看温度，你的设置会保留。",
+        );
+        service_note_row.setEdgeInsets(NSEdgeInsets {
+            top: 2.,
+            left: 6.,
+            bottom: 0.,
+            right: 6.,
+        });
+        view.addArrangedSubview(&service_note_row);
+        service_note_row
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
+            .setActive(true);
+
         let configuration_notice = fluid_caption(mtm, "");
         view.addArrangedSubview(&configuration_notice);
         view.setCustomSpacing_afterView(form::SECTION_GAP, &configuration_notice);
 
-        view.addArrangedSubview(&section_title(mtm, "支持"));
-        let update = push(mtm, "检查更新…", target, sel!(updates:));
+        // ── Section 3: 支持与关于 ──
+        view.addArrangedSubview(&settings_section_title(mtm, "支持与关于", 14.0));
         let version = crate::app_version::current();
-        let update_row = fluid_row(
+        let version_label = label(
             mtm,
-            "软件更新",
-            &format!("当前版本 {}（{}）", version.version, version.build),
-            &[&update],
+            &format!("{} ({})", version.version, version.build),
+            typography::CAPTION,
+            unsafe { NSFontWeightRegular },
+            true,
+            false,
         );
-        let export_row = fluid_row(
-            mtm,
-            "诊断信息",
-            "遇到问题时导出诊断文件，附在反馈里帮助排查。",
-            &[&push(mtm, "导出…", target, sel!(export:))],
-        );
-        let help_buttons = hstack(mtm, spacing::SM);
-        help_buttons.addArrangedSubview(&push(mtm, "使用帮助", target, sel!(help:)));
-        help_buttons.addArrangedSubview(&push(mtm, "关于", target, sel!(about:)));
-        let help_row = fluid_row(mtm, "帮助与关于", "", &[&help_buttons]);
-        let support_group = fluid_group(mtm, &[&update_row.view, &export_row.view, &help_row.view]);
+        version_label.setFont(Some(&theme::rounded_digits(typography::CAPTION, unsafe {
+            NSFontWeightRegular
+        })));
+        let update = push(mtm, "检查更新…", target, sel!(updates:));
+        let (update_row, _) = settings_row(mtm, "软件更新", &[&version_label, &update]);
+
+        let export_action = subtle_action(mtm, "导出…", target, sel!(export:));
+        let export_chevron = chevron_button(mtm, "导出诊断信息", target, sel!(export:));
+        let (export_row, _) = settings_row(mtm, "诊断信息", &[&export_action, &export_chevron]);
+
+        let help_chevron = chevron_button(mtm, "使用帮助", target, sel!(help:));
+        let (help_row, _) = settings_row(mtm, "使用帮助", &[&help_chevron]);
+
+        let about_chevron = chevron_button(mtm, "关于 Fan Control", target, sel!(about:));
+        let (about_row, _) = settings_row(mtm, "关于 Fan Control", &[&about_chevron]);
+
+        let support_group = fluid_group(mtm, &[&update_row, &export_row, &help_row, &about_row]);
         view.addArrangedSubview(&support_group);
         support_group
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -PAGE_INSET * 2.)
             .setActive(true);
 
         Self {
             view,
             login,
-            message: message.clone(),
-            service,
+            message,
+            picker_options,
+            service_badge,
             install,
-            configuration_notice: configuration_notice.clone(),
+            configuration_notice,
             update,
-            captioned: [
-                (general, message.clone()),
-                (service_group, configuration_notice),
-            ],
+        }
+    }
+
+    pub fn set_menu_bar_mode(&self, active: MenuBarDisplayMode) {
+        for option in &self.picker_options {
+            let selected = option.mode == active;
+            option.preview.set_selected(selected);
+            option
+                .caption
+                .setFont(Some(&NSFont::systemFontOfSize_weight(
+                    typography::SMALL,
+                    if selected {
+                        unsafe { NSFontWeightSemibold }
+                    } else {
+                        unsafe { NSFontWeightRegular }
+                    },
+                )));
+            let color = if selected {
+                NSColor::labelColor()
+            } else {
+                NSColor::secondaryLabelColor()
+            };
+            option.caption.setTextColor(Some(&color));
         }
     }
 
     pub fn refresh(&self, demo: bool, installing: bool, ready: bool, notice: &str) {
-        let (title, detail, color) = if demo {
-            (
-                "演示模式",
-                "不连接控制服务，也不会改变风扇。",
-                NSColor::labelColor(),
-            )
+        let (tone, title) = if demo {
+            (Tone::Info, "演示模式")
         } else if installing {
-            (
-                "等待管理员授权",
-                "在系统弹出的窗口中输入密码。",
-                NSColor::systemOrangeColor(),
-            )
+            (Tone::Warning, "等待管理员授权")
         } else if ready {
-            (
-                "已启用",
-                "风扇可以由本应用调节。应用退出、失联或电脑睡眠时会自动交还 macOS。",
-                NSColor::systemGreenColor(),
-            )
+            (Tone::Good, "已启用")
         } else {
-            (
-                "未启用",
-                "目前只能查看温度。启用需要一次管理员授权。",
-                NSColor::labelColor(),
-            )
+            (Tone::Info, "未启用")
         };
-        self.service.title.setStringValue(&text(title));
-        form::set_detail(&self.service, detail);
-        self.service.title.setTextColor(Some(&color));
+        self.service_badge.set(tone, title);
         self.message
             .setHidden(self.message.stringValue().length() == 0);
         self.install.setHidden(demo || ready || installing);
         self.configuration_notice.setStringValue(&text(notice));
         self.configuration_notice.setHidden(notice.is_empty());
-        for (group, caption) in &self.captioned {
-            self.view.setCustomSpacing_afterView(
-                if caption.isHidden() {
-                    form::SECTION_GAP
-                } else {
-                    8.
-                },
-                group,
-            );
-        }
     }
 }

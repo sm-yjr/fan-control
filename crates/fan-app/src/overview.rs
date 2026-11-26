@@ -98,7 +98,7 @@ impl Overview {
         );
         view.addArrangedSubview(&card);
         card.widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         // Fluid KPI tiles (desktop Macs without battery automatically distribute 2 tiles).
@@ -114,7 +114,7 @@ impl Overview {
         view.addArrangedSubview(&tiles);
         tiles
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         // 10-minute dual trend card.
@@ -168,7 +168,7 @@ impl Overview {
         view.addArrangedSubview(&trend_card);
         trend_card
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         // Unified fan gauges + quick cooling mode switcher card.
@@ -230,7 +230,7 @@ impl Overview {
         view.addArrangedSubview(&fans_card);
         fans_card
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         Self {

@@ -46,10 +46,10 @@ impl DetailsPage {
         let top_stack = vstack(mtm, spacing::MD);
         top_stack.setTranslatesAutoresizingMaskIntoConstraints(false);
         top_stack.setEdgeInsets(NSEdgeInsets {
-            top: spacing::XL,
-            left: spacing::XXL,
+            top: spacing::MD,
+            left: crate::form::PAGE_INSET,
             bottom: 0.,
-            right: spacing::XXL,
+            right: crate::form::PAGE_INSET,
         });
 
         // 4 equal-width KPI tiles.
@@ -65,7 +65,10 @@ impl DetailsPage {
         top_stack.addArrangedSubview(&tiles);
         tiles
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&top_stack.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(
+                &top_stack.widthAnchor(),
+                -crate::form::PAGE_INSET * 2.,
+            )
             .setActive(true);
 
         // Compact battery card (auto-hidden on desktop Macs).
@@ -98,7 +101,10 @@ impl DetailsPage {
         top_stack.addArrangedSubview(&battery_group);
         battery_group
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&top_stack.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(
+                &top_stack.widthAnchor(),
+                -crate::form::PAGE_INSET * 2.,
+            )
             .setActive(true);
 
         // Sensor toolbar: group filter pills + sort toggle + search field.
@@ -162,7 +168,10 @@ impl DetailsPage {
         top_stack.addArrangedSubview(&toolbar);
         toolbar
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&top_stack.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(
+                &top_stack.widthAnchor(),
+                -crate::form::PAGE_INSET * 2.,
+            )
             .setActive(true);
 
         // Resizable sensor table card filling all remaining vertical space.
@@ -194,10 +203,10 @@ impl DetailsPage {
                 .constraintEqualToAnchor_constant(&top_stack.bottomAnchor(), spacing::SM),
             list_box
                 .leadingAnchor()
-                .constraintEqualToAnchor_constant(&root.leadingAnchor(), spacing::XXL),
+                .constraintEqualToAnchor_constant(&root.leadingAnchor(), crate::form::PAGE_INSET),
             list_box
                 .trailingAnchor()
-                .constraintEqualToAnchor_constant(&root.trailingAnchor(), -spacing::XXL),
+                .constraintEqualToAnchor_constant(&root.trailingAnchor(), -crate::form::PAGE_INSET),
             list_box
                 .heightAnchor()
                 .constraintGreaterThanOrEqualToConstant(180.),
@@ -206,10 +215,10 @@ impl DetailsPage {
                 .constraintEqualToAnchor_constant(&list_box.bottomAnchor(), spacing::SM),
             footer_note
                 .leadingAnchor()
-                .constraintEqualToAnchor_constant(&root.leadingAnchor(), spacing::XXL),
+                .constraintEqualToAnchor_constant(&root.leadingAnchor(), crate::form::PAGE_INSET),
             footer_note
                 .trailingAnchor()
-                .constraintEqualToAnchor_constant(&root.trailingAnchor(), -spacing::XXL),
+                .constraintEqualToAnchor_constant(&root.trailingAnchor(), -crate::form::PAGE_INSET),
             footer_note
                 .bottomAnchor()
                 .constraintEqualToAnchor_constant(&root.bottomAnchor(), -spacing::LG),

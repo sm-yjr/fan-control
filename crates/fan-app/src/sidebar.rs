@@ -1,8 +1,9 @@
-//! Native macOS translucent sidebar navigation with live status footer.
+//! Native macOS translucent sidebar styled after System Settings: top app status
+//! hero, colorful squircle navigation icons, and a quiet safety handback action.
 use crate::{
-    components::{hstack, pin_edges, surface_box, vstack, StatusBadge},
-    presenter::{Plan, Presentation},
-    theme::{self, spacing, typography, SurfaceStyle},
+    components::{hstack, pin_edges, vstack, BadgeTint, SquircleIcon},
+    presenter::{Plan, Presentation, Tone},
+    theme::{self, spacing, typography},
     ui::{raw_text, rect, text},
 };
 use objc2::{
@@ -56,17 +57,59 @@ impl Section {
 
     pub fn symbol(self) -> &'static str {
         match self {
-            Self::Overview => "square.grid.2x2",
-            Self::Fans => "fanblades",
+            Self::Overview => "square.grid.2x2.fill",
+            Self::Fans => "fanblades.fill",
             Self::Smart => "sparkles",
             Self::Details => "thermometer.medium",
-            Self::Settings => "gearshape",
+            Self::Settings => "gearshape.fill",
+        }
+    }
+
+    fn badge_tint(self) -> BadgeTint {
+        match self {
+            Self::Overview => BadgeTint::Blue,
+            Self::Fans => BadgeTint::Teal,
+            Self::Smart => BadgeTint::Purple,
+            Self::Details => BadgeTint::Orange,
+            Self::Settings => BadgeTint::Gray,
         }
     }
 }
 
 const CELL_ID: &str = "SidebarItem";
-const ROW_HEIGHT: f64 = 32.0;
+const ROW_HEIGHT: f64 = 34.0;
+const SIDEBAR_COLUMN_INSET: f64 = 18.0;
+
+define_class!(
+    /// Subtle translucent rounded pill selection matching modern macOS System Settings
+    /// without inverting text color or breaking offscreen rendering.
+    #[unsafe(super = NSTableRowView)]
+    #[thread_kind = MainThreadOnly]
+    struct SidebarRowView;
+    impl SidebarRowView {
+        #[unsafe(method(interiorBackgroundStyle))]
+        fn interior_background_style(&self) -> NSBackgroundStyle {
+            NSBackgroundStyle::Normal
+        }
+
+        #[unsafe(method(drawSelectionInRect:))]
+        fn draw_selection(&self, _dirty: objc2_foundation::NSRect) {
+            if !self.isSelected() {
+                return;
+            }
+            let b = self.bounds();
+            let pill = objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(b.origin.x + 10.0, b.origin.y + 1.0),
+                NSSize::new((b.size.width - 20.0).max(0.0), (b.size.height - 2.0).max(0.0)),
+            );
+            let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(pill, 8.0, 8.0);
+            NSColor::labelColor()
+                .colorWithAlphaComponent(0.085)
+                .setFill();
+            path.fill();
+        }
+    }
+);
 
 #[derive(Default)]
 struct SidebarSourceIvars {
@@ -88,6 +131,13 @@ define_class!(
         }
     }
     unsafe impl NSTableViewDelegate for SidebarSource {
+        #[unsafe(method_id(tableView:rowViewForRow:))]
+        fn row_view(&self, _table: &NSTableView, _row: isize) -> Option<Retained<NSTableRowView>> {
+            let this = SidebarRowView::alloc(self.mtm()).set_ivars(());
+            let row_view: Retained<SidebarRowView> = unsafe { msg_send![super(this), init] };
+            Some(Retained::into_super(row_view))
+        }
+
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
         fn cell(
             &self,
@@ -121,59 +171,44 @@ define_class!(
 );
 
 impl SidebarSource {
-    fn cell_view(&self, table: &NSTableView, row: isize) -> Option<Retained<NSView>> {
+    fn cell_view(&self, _table: &NSTableView, row: isize) -> Option<Retained<NSView>> {
         let section = Section::from_index(row)?;
-        let id = raw_text(CELL_ID);
         let mtm = self.mtm();
-        let cell = unsafe { table.makeViewWithIdentifier_owner(&id, None) }
-            .and_then(|v| v.downcast::<NSTableCellView>().ok())
-            .unwrap_or_else(|| {
-                let cell = NSTableCellView::initWithFrame(
-                    NSTableCellView::alloc(mtm),
-                    rect(0., 0., 180., ROW_HEIGHT),
-                );
-                cell.setIdentifier(Some(&id));
-                let row_stack = hstack(mtm, spacing::SM);
-                row_stack.setEdgeInsets(NSEdgeInsets {
-                    top: 0.,
-                    left: 6.,
-                    bottom: 0.,
-                    right: 6.,
-                });
-                let icon = NSImageView::new(mtm);
-                icon.setTranslatesAutoresizingMaskIntoConstraints(false);
-                icon.widthAnchor()
-                    .constraintEqualToConstant(16.)
-                    .setActive(true);
-                icon.heightAnchor()
-                    .constraintEqualToConstant(16.)
-                    .setActive(true);
-                let title = crate::components::label(
-                    mtm,
-                    "",
-                    typography::BODY,
-                    unsafe { NSFontWeightMedium },
-                    false,
-                    false,
-                );
-                row_stack.addArrangedSubview(&icon);
-                row_stack.addArrangedSubview(&title);
-                cell.addSubview(&row_stack);
-                pin_edges(&row_stack, &cell);
-                unsafe {
-                    cell.setImageView(Some(&icon));
-                    cell.setTextField(Some(&title));
-                }
-                cell
-            });
-        if let Some(icon) = unsafe { cell.imageView() } {
-            if let Some(img) = theme::symbol_image(section.symbol(), None, 14.0) {
-                icon.setImage(Some(&img));
-            }
-            icon.setContentTintColor(Some(&NSColor::controlAccentColor()));
-        }
-        if let Some(label) = unsafe { cell.textField() } {
-            label.setStringValue(&text(section.title()));
+        let cell = NSTableCellView::initWithFrame(
+            NSTableCellView::alloc(mtm),
+            rect(0., 0., 196., ROW_HEIGHT),
+        );
+        cell.setIdentifier(Some(&raw_text(CELL_ID)));
+        let badge = SquircleIcon::new(mtm, section.symbol(), section.badge_tint(), 22.0, false);
+        let title = crate::components::label(
+            mtm,
+            section.title(),
+            typography::BODY,
+            unsafe { NSFontWeightMedium },
+            false,
+            false,
+        );
+        title.setTranslatesAutoresizingMaskIntoConstraints(false);
+        cell.addSubview(&badge);
+        cell.addSubview(&title);
+        for c in [
+            badge
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&cell.leadingAnchor(), SIDEBAR_COLUMN_INSET),
+            badge
+                .centerYAnchor()
+                .constraintEqualToAnchor(&cell.centerYAnchor()),
+            title
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&badge.trailingAnchor(), 10.0),
+            title
+                .trailingAnchor()
+                .constraintLessThanOrEqualToAnchor_constant(&cell.trailingAnchor(), -14.0),
+            title
+                .centerYAnchor()
+                .constraintEqualToAnchor(&cell.centerYAnchor()),
+        ] {
+            c.setActive(true);
         }
         Some(Retained::into_super(cell))
     }
@@ -183,8 +218,8 @@ pub(crate) struct Sidebar {
     pub controller: Retained<NSViewController>,
     table: Retained<NSTableView>,
     source: Retained<SidebarSource>,
-    badge: StatusBadge,
-    summary: Retained<NSTextField>,
+    hero_icon: Retained<SquircleIcon>,
+    hero_status: Retained<NSTextField>,
     reset: Retained<NSButton>,
 }
 
@@ -198,34 +233,50 @@ impl Sidebar {
         let container = vstack(mtm, spacing::SM);
         container.setEdgeInsets(NSEdgeInsets {
             top: 44.,
-            left: spacing::MD,
+            left: 0.,
             bottom: spacing::MD,
-            right: spacing::MD,
+            right: 0.,
         });
         container.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        // Brand title above navigation list.
-        let brand_row = hstack(mtm, spacing::SM);
-        if let Some(icon) = theme::symbol_image("fanblades.fill", None, 15.0)
-            .or_else(|| theme::symbol_image("fanblades", None, 15.0))
-        {
-            let img = NSImageView::imageViewWithImage(&icon, mtm);
-            img.setContentTintColor(Some(&NSColor::controlAccentColor()));
-            brand_row.addArrangedSubview(&img);
-        }
+        // Top status hero (mirrors macOS Settings top identity/service row).
+        let hero_row = hstack(mtm, 10.0);
+        hero_row.setEdgeInsets(NSEdgeInsets {
+            top: 4.,
+            left: SIDEBAR_COLUMN_INSET,
+            bottom: 4.,
+            right: 14.,
+        });
+        let hero_icon = SquircleIcon::new(mtm, "fanblades.fill", BadgeTint::Blue, 34.0, true);
+        let hero_words = vstack(mtm, 1.0);
         let brand = crate::components::label(
             mtm,
             "Fan Control",
-            typography::SECTION,
+            typography::BODY,
             unsafe { NSFontWeightSemibold },
             false,
             false,
         );
-        brand_row.addArrangedSubview(&brand);
-        container.addArrangedSubview(&brand_row);
-        container.setCustomSpacing_afterView(spacing::MD, &brand_row);
+        let hero_status = crate::components::label(
+            mtm,
+            "正在检测…",
+            typography::SMALL,
+            unsafe { NSFontWeightRegular },
+            true,
+            false,
+        );
+        hero_status.setFont(Some(&theme::rounded_digits(typography::SMALL, unsafe {
+            NSFontWeightRegular
+        })));
+        hero_status.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        hero_words.addArrangedSubview(&brand);
+        hero_words.addArrangedSubview(&hero_status);
+        hero_row.addArrangedSubview(&hero_icon);
+        hero_row.addArrangedSubview(&hero_words);
+        container.addArrangedSubview(&hero_row);
+        container.setCustomSpacing_afterView(14., &hero_row);
 
-        // Native SourceList table for keyboard + VoiceOver navigation.
+        // Native table with custom Settings-style pill selection for keyboard + VoiceOver navigation.
         let scroll = NSScrollView::new(mtm);
         scroll.setTranslatesAutoresizingMaskIntoConstraints(false);
         scroll.setHasVerticalScroller(false);
@@ -233,8 +284,9 @@ impl Sidebar {
         let table = NSTableView::new(mtm);
         table.setHeaderView(None);
         table.setRowHeight(ROW_HEIGHT);
-        table.setIntercellSpacing(NSSize::new(0., 2.));
-        table.setStyle(NSTableViewStyle::SourceList);
+        table.setIntercellSpacing(NSSize::new(0., 3.));
+        table.setStyle(NSTableViewStyle::Plain);
+        table.setSelectionHighlightStyle(NSTableViewSelectionHighlightStyle::Regular);
         table.setBackgroundColor(&NSColor::clearColor());
         table.setAllowsEmptySelection(false);
         table.setAllowsMultipleSelection(false);
@@ -259,14 +311,13 @@ impl Sidebar {
         container.addArrangedSubview(&scroll);
         scroll
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&container.widthAnchor(), -spacing::MD * 2.)
+            .constraintEqualToAnchor(&container.widthAnchor())
             .setActive(true);
         scroll
             .heightAnchor()
-            .constraintGreaterThanOrEqualToConstant(ROW_HEIGHT * 5. + 16.)
+            .constraintGreaterThanOrEqualToConstant(ROW_HEIGHT * 5. + 24.)
             .setActive(true);
 
-        // Push footer status card to the bottom of the sidebar.
         let vspacer = NSView::new(mtm);
         vspacer
             .setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Vertical);
@@ -276,19 +327,7 @@ impl Sidebar {
         );
         container.addArrangedSubview(&vspacer);
 
-        let footer_stack = vstack(mtm, spacing::SM);
-        let badge = StatusBadge::new(mtm, "正在检测…", crate::presenter::Tone::Info);
-        let summary = crate::components::label(
-            mtm,
-            "—",
-            typography::SMALL,
-            unsafe { NSFontWeightRegular },
-            true,
-            true,
-        );
-        summary.setFont(Some(&theme::rounded_digits(typography::SMALL, unsafe {
-            NSFontWeightMedium
-        })));
+        // Quiet bottom safety action (no heavy card clutter).
         let reset = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &text("恢复系统自动"),
@@ -297,22 +336,25 @@ impl Sidebar {
                 mtm,
             )
         };
-        reset.setControlSize(NSControlSize::Small);
-        footer_stack.addArrangedSubview(&badge.view);
-        footer_stack.addArrangedSubview(&summary);
-        footer_stack.addArrangedSubview(&reset);
-
-        let footer_card = surface_box(
-            mtm,
-            &footer_stack,
-            NSSize::new(10., 10.),
-            SurfaceStyle::Card,
-        );
-        container.addArrangedSubview(&footer_card);
-        footer_card
-            .widthAnchor()
-            .constraintEqualToAnchor_constant(&container.widthAnchor(), -spacing::MD * 2.)
-            .setActive(true);
+        reset.setBordered(false);
+        reset.setFont(Some(&NSFont::systemFontOfSize_weight(
+            typography::CAPTION,
+            unsafe { NSFontWeightMedium },
+        )));
+        reset.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        if let Some(icon) = theme::symbol_image("arrow.counterclockwise", None, 11.5) {
+            reset.setImage(Some(&icon));
+            reset.setImagePosition(NSCellImagePosition::ImageLeading);
+        }
+        let footer = hstack(mtm, spacing::XS);
+        footer.setEdgeInsets(NSEdgeInsets {
+            top: 4.,
+            left: SIDEBAR_COLUMN_INSET,
+            bottom: 4.,
+            right: 14.,
+        });
+        footer.addArrangedSubview(&reset);
+        container.addArrangedSubview(&footer);
 
         material.addSubview(&container);
         pin_edges(&container, &material);
@@ -324,8 +366,8 @@ impl Sidebar {
             controller,
             table,
             source,
-            badge,
-            summary,
+            hero_icon,
+            hero_status,
             reset,
         };
         sidebar.select(Section::Overview);
@@ -344,27 +386,27 @@ impl Sidebar {
     }
 
     pub fn refresh(&self, view: &Presentation) {
-        self.badge.set(
-            view.notice.tone,
-            match view.notice.tone {
-                crate::presenter::Tone::Good => "运行正常",
-                crate::presenter::Tone::Info => "提示",
-                crate::presenter::Tone::Warning => "需要注意",
-                crate::presenter::Tone::Danger => "温度偏高",
-            },
-        );
-        let temp = view
-            .temperature
-            .map(|v| format!("{v:.0}°C"))
-            .unwrap_or_else(|| "—".into());
-        let plan_name = crate::i18n::translate(match view.plan {
-            Plan::System => "系统默认",
-            Plan::Smart => "智能散热",
-            Plan::Custom => "自定义",
-            Plan::Mixed => "各风扇分别设置",
+        self.hero_icon.set_tint(match view.notice.tone {
+            Tone::Good => BadgeTint::Blue,
+            Tone::Info => BadgeTint::Purple,
+            Tone::Warning | Tone::Danger => BadgeTint::Orange,
         });
-        self.summary
-            .setStringValue(&raw_text(&format!("{temp} · {plan_name}")));
+        let state_word = crate::i18n::translate(match view.notice.tone {
+            Tone::Good => match view.plan {
+                Plan::System => "系统默认",
+                Plan::Smart => "智能散热",
+                Plan::Custom => "自定义",
+                Plan::Mixed => "分别设置",
+            },
+            Tone::Info => "提示",
+            Tone::Warning => "需要注意",
+            Tone::Danger => "温度偏高",
+        });
+        let summary = match view.temperature {
+            Some(temp) => format!("{state_word} · {temp:.0}°C"),
+            None => state_word,
+        };
+        self.hero_status.setStringValue(&raw_text(&summary));
         self.reset.setEnabled(view.controls_enabled);
     }
 }

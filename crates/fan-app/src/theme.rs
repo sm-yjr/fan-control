@@ -16,7 +16,7 @@ pub mod spacing {
 }
 
 pub mod radius {
-    pub const CARD: f64 = 12.0;
+    pub const CARD: f64 = 14.0;
     pub const WELL: f64 = 10.0;
     pub const PILL: f64 = 999.0;
 }
@@ -40,9 +40,9 @@ pub mod typography {
 pub mod layout {
     pub const PANEL_WIDTH: f64 = 400.0;
     pub const WINDOW_DEFAULT_WIDTH: f64 = 840.0;
-    pub const WINDOW_DEFAULT_HEIGHT: f64 = 600.0;
+    pub const WINDOW_DEFAULT_HEIGHT: f64 = 640.0;
     pub const WINDOW_MIN_WIDTH: f64 = 700.0;
-    pub const WINDOW_MIN_HEIGHT: f64 = 500.0;
+    pub const WINDOW_MIN_HEIGHT: f64 = 520.0;
     pub const SIDEBAR_WIDTH: f64 = 196.0;
     pub const GAUGE_TRACK: f64 = 10.0;
     pub const HAIRLINE: f64 = 0.5;
@@ -76,29 +76,29 @@ impl SurfaceStyle {
     pub fn colors(self) -> (Option<Retained<NSColor>>, Option<Retained<NSColor>>) {
         match self {
             Self::Card => (
-                Some(NSColor::quaternarySystemFillColor()),
-                Some(NSColor::separatorColor().colorWithAlphaComponent(0.5)),
+                Some(NSColor::tertiarySystemFillColor()),
+                Some(NSColor::separatorColor().colorWithAlphaComponent(0.09)),
             ),
             Self::Well => (
-                Some(NSColor::quinaryLabelColor()),
-                Some(NSColor::separatorColor().colorWithAlphaComponent(0.35)),
+                Some(NSColor::quaternarySystemFillColor()),
+                Some(NSColor::separatorColor().colorWithAlphaComponent(0.14)),
             ),
             Self::NeutralPill => (
                 Some(NSColor::quaternarySystemFillColor()),
-                Some(NSColor::separatorColor().colorWithAlphaComponent(0.4)),
+                Some(NSColor::separatorColor().colorWithAlphaComponent(0.20)),
             ),
             Self::TonePill(tone) => {
                 let tint = tone_color(tone);
                 (
-                    Some(tint.colorWithAlphaComponent(0.14)),
-                    Some(tint.colorWithAlphaComponent(0.28)),
+                    Some(tint.colorWithAlphaComponent(0.13)),
+                    Some(tint.colorWithAlphaComponent(0.22)),
                 )
             }
             Self::Banner(tone) => {
                 let tint = tone_color(tone);
                 (
-                    Some(tint.colorWithAlphaComponent(0.12)),
-                    Some(tint.colorWithAlphaComponent(0.32)),
+                    Some(tint.colorWithAlphaComponent(0.11)),
+                    Some(tint.colorWithAlphaComponent(0.24)),
                 )
             }
         }

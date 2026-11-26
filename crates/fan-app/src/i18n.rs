@@ -674,6 +674,15 @@ const CATALOG: &[Text] = texts![
     ("颜色表示温度高低：绿色较凉，黄色温热，橙色偏热，红色过热。名称按芯片型号核对，未确认项保留原始标识，虚拟温度与热余量单独标明。", "Colors show relative warmth: green is cool, yellow is warm, orange is hot, red is very hot. Names are checked by chip model; unconfirmed sensors keep their raw key, and virtual temperatures or headroom are labeled separately."),
     ("菜单栏显示", "Menu bar display"),
     ("在状态栏图标旁可选展示实时芯片温度或最高转速。", "Optionally show live chip temperature or fastest fan speed next to the menu bar icon."),
+    ("分别设置", "Per-fan"),
+    ("外观与通用", "Appearance & General"),
+    ("最高转速", "Fastest fan"),
+    ("温度与转速", "Temp & RPM"),
+    ("开机后自动在菜单栏运行；切换界面语言需重新打开应用生效。", "Starts automatically in the menu bar at login; language changes take effect after relaunch."),
+    ("控制服务状态", "Control service"),
+    ("应用退出、失联或电脑睡眠时会自动交还 macOS；移除服务后仍可查看温度，你的设置会保留。", "Fans return to macOS automatically on quit, disconnect, or sleep. After removal, temperatures remain visible and settings are kept."),
+    ("支持与关于", "Support & About"),
+    ("导出诊断信息", "Export diagnostics"),
 ];
 
 #[derive(Clone, Copy)]

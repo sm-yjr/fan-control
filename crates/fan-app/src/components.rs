@@ -140,11 +140,194 @@ pub(crate) fn flex_spacer(mtm: MainThreadMarker) -> Retained<NSView> {
     spacer
 }
 
-pub(crate) fn hairline(mtm: MainThreadMarker) -> Retained<NSBox> {
-    let line = NSBox::new(mtm);
-    line.setBoxType(NSBoxType::Separator);
+define_class!(
+    /// Crisp 0.5pt semantic hairline divider that draws reliably across light/dark modes.
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    pub(crate) struct HairlineView;
+    impl HairlineView {
+        #[unsafe(method(drawRect:))]
+        fn draw(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let line = NSRect::new(
+                objc2_foundation::NSPoint::new(b.origin.x, b.origin.y + (b.size.height - 0.5) / 2.0),
+                NSSize::new(b.size.width, 0.5),
+            );
+            NSColor::separatorColor()
+                .colorWithAlphaComponent(0.20)
+                .setFill();
+            NSBezierPath::fillRect(line);
+        }
+    }
+);
+
+pub(crate) fn hairline(mtm: MainThreadMarker) -> Retained<HairlineView> {
+    let this = HairlineView::alloc(mtm).set_ivars(());
+    let line: Retained<HairlineView> = unsafe { msg_send![super(this), init] };
     line.setTranslatesAutoresizingMaskIntoConstraints(false);
+    line.heightAnchor()
+        .constraintEqualToConstant(1.0)
+        .setActive(true);
     line
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BadgeTint {
+    Blue,
+    Teal,
+    Purple,
+    Orange,
+    Gray,
+}
+
+impl BadgeTint {
+    fn color(self) -> Retained<NSColor> {
+        match self {
+            Self::Blue => NSColor::systemBlueColor(),
+            Self::Teal => NSColor::systemTealColor(),
+            Self::Purple => NSColor::systemIndigoColor(),
+            Self::Orange => NSColor::systemOrangeColor(),
+            Self::Gray => NSColor::systemGrayColor(),
+        }
+    }
+}
+
+pub(crate) struct SquircleIvars {
+    tint: Cell<BadgeTint>,
+    circle: Cell<bool>,
+}
+
+define_class!(
+    /// Colorful macOS Settings-style squircle/circle icon badge with subtle vertical sheen.
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SquircleIvars]
+    pub(crate) struct SquircleIcon;
+    impl SquircleIcon {
+        #[unsafe(method(drawRect:))]
+        fn draw(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let r = if self.ivars().circle.get() {
+                b.size.width.min(b.size.height) / 2.0
+            } else {
+                (b.size.width * 0.27).max(5.0)
+            };
+            let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(b, r, r);
+            let base = self.ivars().tint.get().color();
+            let top = base.blendedColorWithFraction_ofColor(0.18, &NSColor::whiteColor()).unwrap_or_else(|| base.clone());
+            let bottom = base.blendedColorWithFraction_ofColor(0.12, &NSColor::blackColor()).unwrap_or(base);
+            if let Some(gradient) = NSGradient::initWithStartingColor_endingColor(
+                <NSGradient as objc2::AnyThread>::alloc(),
+                &top,
+                &bottom,
+            ) {
+                gradient.drawInBezierPath_angle(&path, -90.0);
+            } else {
+                top.setFill();
+                path.fill();
+            }
+        }
+    }
+);
+
+impl SquircleIcon {
+    pub fn new(
+        mtm: MainThreadMarker,
+        symbol: &str,
+        tint: BadgeTint,
+        size: f64,
+        circle: bool,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SquircleIvars {
+            tint: Cell::new(tint),
+            circle: Cell::new(circle),
+        });
+        let view: Retained<Self> = unsafe { msg_send![super(this), init] };
+        view.setTranslatesAutoresizingMaskIntoConstraints(false);
+        view.widthAnchor()
+            .constraintEqualToConstant(size)
+            .setActive(true);
+        view.heightAnchor()
+            .constraintEqualToConstant(size)
+            .setActive(true);
+        if let Some(img) = theme::symbol_image(symbol, None, size * 0.54) {
+            let image_view = NSImageView::imageViewWithImage(&img, mtm);
+            image_view.setTranslatesAutoresizingMaskIntoConstraints(false);
+            image_view.setContentTintColor(Some(&NSColor::whiteColor()));
+            view.addSubview(&image_view);
+            image_view
+                .centerXAnchor()
+                .constraintEqualToAnchor(&view.centerXAnchor())
+                .setActive(true);
+            image_view
+                .centerYAnchor()
+                .constraintEqualToAnchor(&view.centerYAnchor())
+                .setActive(true);
+        }
+        view
+    }
+
+    pub fn set_tint(&self, tint: BadgeTint) {
+        if self.ivars().tint.get() != tint {
+            self.ivars().tint.set(tint);
+            self.setNeedsDisplay(true);
+        }
+    }
+}
+
+/// Subtle footnote row with a leading `(i)` icon, matching macOS Settings captions.
+pub(crate) fn info_footnote(
+    mtm: MainThreadMarker,
+    value: &str,
+) -> (Retained<NSStackView>, Retained<NSTextField>) {
+    let row = hstack(mtm, 6.0);
+    row.setAlignment(NSLayoutAttribute::Top);
+    if let Some(img) = theme::symbol_image("info.circle", None, 11.5) {
+        let icon = NSImageView::imageViewWithImage(&img, mtm);
+        icon.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        icon.setTranslatesAutoresizingMaskIntoConstraints(false);
+        icon.widthAnchor()
+            .constraintEqualToConstant(13.0)
+            .setActive(true);
+        icon.heightAnchor()
+            .constraintEqualToConstant(14.0)
+            .setActive(true);
+        row.addArrangedSubview(&icon);
+    }
+    let text_field = label(
+        mtm,
+        value,
+        typography::SMALL,
+        unsafe { NSFontWeightRegular },
+        true,
+        true,
+    );
+    row.addArrangedSubview(&text_field);
+    (row, text_field)
+}
+
+/// Borderless trailing chevron action button matching macOS Settings navigation rows.
+pub(crate) fn chevron_button(
+    mtm: MainThreadMarker,
+    accessibility: &str,
+    target: &AnyObject,
+    action: objc2::runtime::Sel,
+) -> Retained<NSButton> {
+    let image = theme::symbol_image("chevron.right", Some(accessibility), 11.5)
+        .or_else(|| {
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &raw_text("chevron.right"),
+                Some(&text(accessibility)),
+            )
+        })
+        .expect("chevron symbol");
+    let button =
+        unsafe { NSButton::buttonWithImage_target_action(&image, Some(target), Some(action), mtm) };
+    button.setBordered(false);
+    button.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
+    button.setAccessibilityLabel(Some(&text(accessibility)));
+    button.setToolTip(Some(&text(accessibility)));
+    button
 }
 
 pub(crate) fn label(

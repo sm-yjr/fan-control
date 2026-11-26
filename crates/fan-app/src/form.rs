@@ -9,20 +9,21 @@ use objc2::rc::Retained;
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSEdgeInsets, NSSize};
 
-const ROW_INSET: f64 = 14.;
+pub(crate) const PAGE_INSET: f64 = 28.;
+const ROW_INSET: f64 = 16.;
 pub(crate) const BODY: f64 = typography::BODY;
 pub(crate) const CAPTION: f64 = typography::SMALL;
-pub(crate) const SECTION_GAP: f64 = 18.;
+pub(crate) const SECTION_GAP: f64 = 20.;
 
 /// Resizable page container for the modern split-view detail pane.
 pub(crate) fn fluid_page(mtm: MainThreadMarker) -> Retained<NSStackView> {
     let page = vstack(mtm, spacing::SM);
     page.setTranslatesAutoresizingMaskIntoConstraints(false);
     page.setEdgeInsets(NSEdgeInsets {
-        top: spacing::XL,
-        left: spacing::XXL,
+        top: spacing::MD,
+        left: PAGE_INSET,
         bottom: spacing::XXL,
-        right: spacing::XXL,
+        right: PAGE_INSET,
     });
     page
 }
@@ -33,6 +34,23 @@ pub(crate) fn section_title(mtm: MainThreadMarker, title: &str) -> Retained<NSTe
         NSFontWeightSemibold
     })));
     label
+}
+
+/// Indented section header matching macOS Settings ("Appearance", "Toolbar", ...).
+pub(crate) fn settings_section_title(
+    mtm: MainThreadMarker,
+    title: &str,
+    top_padding: f64,
+) -> Retained<NSStackView> {
+    let row = crate::components::hstack(mtm, 0.);
+    row.setEdgeInsets(NSEdgeInsets {
+        top: top_padding,
+        left: 6.,
+        bottom: 2.,
+        right: 6.,
+    });
+    row.addArrangedSubview(&section_title(mtm, title));
+    row
 }
 
 pub(crate) fn fluid_caption(mtm: MainThreadMarker, value: &str) -> Retained<NSTextField> {
@@ -48,7 +66,7 @@ pub(crate) fn fluid_caption(mtm: MainThreadMarker, value: &str) -> Retained<NSTe
 
 /// Fluid-width card group whose rows and hairlines expand with the detail pane.
 pub(crate) fn fluid_group(mtm: MainThreadMarker, rows: &[&NSView]) -> Retained<SurfaceView> {
-    let content = vstack(mtm, 10.);
+    let content = vstack(mtm, 11.);
     for (index, row) in rows.iter().enumerate() {
         if index > 0 {
             let line = hairline(mtm);
@@ -65,14 +83,47 @@ pub(crate) fn fluid_group(mtm: MainThreadMarker, rows: &[&NSView]) -> Retained<S
     surface_box(
         mtm,
         &content,
-        NSSize::new(ROW_INSET, 12.),
+        NSSize::new(ROW_INSET, 11.),
         SurfaceStyle::Card,
     )
 }
 
+/// Clean single-line macOS Settings row with comfortable height and no subtitle clutter.
+pub(crate) fn settings_row(
+    mtm: MainThreadMarker,
+    title: &str,
+    accessories: &[&NSView],
+) -> (Retained<NSStackView>, Retained<NSTextField>) {
+    let title_label = crate::components::label(
+        mtm,
+        title,
+        BODY,
+        unsafe { NSFontWeightRegular },
+        false,
+        false,
+    );
+    let view = crate::components::hstack(mtm, spacing::SM);
+    view.heightAnchor()
+        .constraintGreaterThanOrEqualToConstant(24.)
+        .setActive(true);
+    view.addArrangedSubview(&title_label);
+    view.addArrangedSubview(&flex_spacer(mtm));
+    for accessory in accessories {
+        accessory.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityRequired,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        accessory.setContentHuggingPriority_forOrientation(
+            NSLayoutPriorityRequired,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        view.addArrangedSubview(accessory);
+    }
+    (view, title_label)
+}
+
 pub(crate) struct Row {
     pub view: Retained<NSStackView>,
-    pub title: Retained<NSTextField>,
     pub detail: Retained<NSTextField>,
 }
 
@@ -121,11 +172,7 @@ pub(crate) fn fluid_row(
         );
         view.addArrangedSubview(accessory);
     }
-    Row {
-        view,
-        title,
-        detail,
-    }
+    Row { view, detail }
 }
 
 pub(crate) fn set_detail(row: &Row, value: &str) {

@@ -480,6 +480,59 @@ pub fn run() {
             }
         }
     }
+    // Render the redesigned Settings window (sidebar + Settings page) in light and dark modes.
+    for (theme, appearance_name) in [
+        ("light", unsafe { NSAppearanceNameAqua }),
+        ("dark", unsafe { NSAppearanceNameDarkAqua }),
+    ] {
+        crate::i18n::set_override(crate::i18n::Lang::Chinese);
+        let appearance = NSAppearance::appearanceNamed(appearance_name).expect("system appearance");
+        let overview = crate::overview::Overview::new(mtm, &target);
+        let fans = crate::fans::FansPage::new(mtm, true);
+        let details = crate::details::DetailsPage::new(mtm, &target);
+        let settings = crate::preferences::SettingsPage::new(mtm, &target, true);
+        let smart_placeholder = crate::form::fluid_page(mtm);
+        let shell = crate::shell::MainShell::new(
+            mtm,
+            &target,
+            true,
+            &overview.view,
+            &fans.view,
+            &smart_placeholder,
+            &details.view,
+            &settings.view,
+        );
+        let state = fixture(2, false, 0);
+        let presentation = present(&state, true, false);
+        shell.refresh(&presentation);
+        settings.refresh(false, false, true, "");
+        settings.set_menu_bar_mode(crate::status_bar::MenuBarDisplayMode::Temperature);
+        shell.select(crate::sidebar::Section::Settings);
+        shell.window.setAppearance(Some(&appearance));
+        if let Some(content) = shell.window.contentView() {
+            content.setAppearance(Some(&appearance));
+            content.layoutSubtreeIfNeeded();
+            let bitmap = content
+                .bitmapImageRepForCachingDisplayInRect(content.bounds())
+                .expect("settings bitmap");
+            appearance.performAsCurrentDrawingAppearance(&block2::RcBlock::new(|| {
+                content.cacheDisplayInRect_toBitmapImageRep(content.bounds(), &bitmap);
+            }));
+            let data = unsafe {
+                bitmap.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::new(),
+                )
+            }
+            .expect("settings PNG");
+            std::fs::write(
+                output.join(format!("settings-{theme}-zh.png")),
+                data.to_vec(),
+            )
+            .expect("write settings PNG");
+        }
+    }
+
     let result = serde_json::json!({"hardware_access":false,"user_configuration_access":false,"desktop_activated":false,"scenes":reports,"refresh_stability":refresh_reports});
     std::fs::write(
         output.join("report.json"),

@@ -1,8 +1,8 @@
-//! Resizable macOS split-view main window hosting a frosted sidebar and stable
-//! detail pane that never jumps in height when switching sections.
+//! Resizable macOS split-view main window hosting a frosted Settings-style sidebar
+//! and airy detail pane that never jumps in height when switching sections.
 use crate::{
-    components::{flex_spacer, hairline, hstack, pin_edges, StatusBadge},
-    presenter::{Presentation, Tone},
+    components::{flex_spacer, hstack, pin_edges},
+    presenter::Presentation,
     sidebar::{Section, Sidebar},
     theme::{layout, spacing, typography},
     ui::{raw_text, rect, text},
@@ -11,6 +11,30 @@ use objc2::{define_class, msg_send, rc::Retained, runtime::AnyObject, MainThread
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSEdgeInsets, NSSize};
 use std::cell::Cell;
+
+define_class!(
+    /// Semantic window-background canvas for the detail pane so Light and Dark modes
+    /// paint an opaque native surface consistently in live and offscreen rendering.
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    struct DetailCanvasView;
+    impl DetailCanvasView {
+        #[unsafe(method(drawRect:))]
+        fn draw(&self, _dirty: objc2_foundation::NSRect) {
+            NSColor::windowBackgroundColor().setFill();
+            NSBezierPath::fillRect(self.bounds());
+        }
+    }
+);
+
+impl DetailCanvasView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.setTranslatesAutoresizingMaskIntoConstraints(false);
+        this
+    }
+}
 
 define_class!(
     /// Top-aligned document container for NSScrollView so scrollable pages
@@ -75,7 +99,6 @@ pub(crate) struct MainShell {
     pub sidebar: Sidebar,
     _split: Retained<NSSplitViewController>,
     header_title: Retained<NSTextField>,
-    header_badge: StatusBadge,
     stage: Retained<NSView>,
     pages: [Retained<NSView>; 5],
     active: Cell<Section>,
@@ -95,17 +118,16 @@ impl MainShell {
     ) -> Self {
         let sidebar = Sidebar::new(mtm, target);
 
-        let detail_root = NSView::new(mtm);
-        detail_root.setTranslatesAutoresizingMaskIntoConstraints(false);
+        let detail_root = DetailCanvasView::new(mtm);
 
-        // Unified page header bar.
+        // Airy macOS Settings header bar (no harsh full-width rule).
         let header_bar = hstack(mtm, spacing::MD);
         header_bar.setTranslatesAutoresizingMaskIntoConstraints(false);
         header_bar.setEdgeInsets(NSEdgeInsets {
-            top: spacing::MD,
-            left: spacing::XXL,
-            bottom: spacing::MD,
-            right: spacing::XXL,
+            top: 14.,
+            left: 28.,
+            bottom: 4.,
+            right: 28.,
         });
         let header_title = crate::components::label(
             mtm,
@@ -115,17 +137,13 @@ impl MainShell {
             false,
             false,
         );
-        let header_badge = StatusBadge::new(mtm, "正在检测…", Tone::Info);
         header_bar.addArrangedSubview(&header_title);
         header_bar.addArrangedSubview(&flex_spacer(mtm));
-        header_bar.addArrangedSubview(&header_badge.view);
 
-        let divider = hairline(mtm);
         let stage = NSView::new(mtm);
         stage.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         detail_root.addSubview(&header_bar);
-        detail_root.addSubview(&divider);
         detail_root.addSubview(&stage);
 
         for c in [
@@ -138,19 +156,10 @@ impl MainShell {
             header_bar
                 .trailingAnchor()
                 .constraintEqualToAnchor(&detail_root.trailingAnchor()),
-            header_bar.heightAnchor().constraintEqualToConstant(50.0),
-            divider
-                .topAnchor()
-                .constraintEqualToAnchor(&header_bar.bottomAnchor()),
-            divider
-                .leadingAnchor()
-                .constraintEqualToAnchor(&detail_root.leadingAnchor()),
-            divider
-                .trailingAnchor()
-                .constraintEqualToAnchor(&detail_root.trailingAnchor()),
+            header_bar.heightAnchor().constraintEqualToConstant(48.0),
             stage
                 .topAnchor()
-                .constraintEqualToAnchor(&divider.bottomAnchor()),
+                .constraintEqualToAnchor(&header_bar.bottomAnchor()),
             stage
                 .leadingAnchor()
                 .constraintEqualToAnchor(&detail_root.leadingAnchor()),
@@ -182,8 +191,8 @@ impl MainShell {
 
         let split = NSSplitViewController::new(mtm);
         let sidebar_item = NSSplitViewItem::sidebarWithViewController(&sidebar.controller);
-        sidebar_item.setMinimumThickness(184.0);
-        sidebar_item.setMaximumThickness(232.0);
+        sidebar_item.setMinimumThickness(196.0);
+        sidebar_item.setMaximumThickness(240.0);
         sidebar_item.setCanCollapse(false);
         let detail_item = NSSplitViewItem::splitViewItemWithViewController(&detail_vc);
         detail_item.setMinimumThickness(layout::WINDOW_MIN_WIDTH - layout::SIDEBAR_WIDTH);
@@ -233,7 +242,6 @@ impl MainShell {
             sidebar,
             _split: split,
             header_title,
-            header_badge,
             stage,
             pages,
             active: Cell::new(Section::Overview),
@@ -268,15 +276,6 @@ impl MainShell {
 
     pub fn refresh(&self, view: &Presentation) {
         self.sidebar.refresh(view);
-        self.header_badge.set(
-            view.notice.tone,
-            match view.notice.tone {
-                Tone::Good => "运行正常",
-                Tone::Info => "提示",
-                Tone::Warning => "需要注意",
-                Tone::Danger => "温度偏高",
-            },
-        );
     }
 
     pub fn show(&self, section: Section) {

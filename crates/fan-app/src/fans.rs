@@ -302,7 +302,7 @@ impl FansPage {
         view.addArrangedSubview(&cards);
         cards
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
 
         let empty = label(
@@ -327,7 +327,7 @@ impl FansPage {
         view.addArrangedSubview(&notice_box);
         notice_box
             .widthAnchor()
-            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -crate::form::PAGE_INSET * 2.)
             .setActive(true);
         Self {
             view,
