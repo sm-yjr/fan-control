@@ -157,12 +157,20 @@ fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
             mtm,
         )
     };
-    choice.setSegmentDistribution(NSSegmentDistribution::FillEqually);
+    choice.setControlSize(NSControlSize::Small);
+    choice.setFont(Some(&NSFont::systemFontOfSize(
+        NSFont::smallSystemFontSize(),
+    )));
+    choice.setSegmentDistribution(NSSegmentDistribution::Fit);
+    choice.setContentCompressionResistancePriority_forOrientation(
+        NSLayoutPriorityDefaultLow,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
     choice.setTag(index as isize);
     details.addArrangedSubview(&choice);
     choice
         .widthAnchor()
-        .constraintEqualToAnchor(&details.widthAnchor())
+        .constraintLessThanOrEqualToAnchor(&details.widthAnchor())
         .setActive(true);
 
     let explanation = fluid_caption(mtm, "");

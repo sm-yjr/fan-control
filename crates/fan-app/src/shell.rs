@@ -82,9 +82,11 @@ pub(crate) struct MainShell {
 }
 
 impl MainShell {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mtm: MainThreadMarker,
         target: &AnyObject,
+        demo: bool,
         overview: &NSView,
         fans: &NSView,
         smart_placeholder: &NSView,
@@ -219,7 +221,9 @@ impl MainShell {
         window.setContentSize(NSSize::new(default_w, default_h));
         window.setFrame_display(rect(0., 0., default_w, default_h), false);
         window.center();
-        let _ = window.setFrameAutosaveName(&raw_text("FanControlMainWindow"));
+        if !demo {
+            let _ = window.setFrameAutosaveName(&raw_text("FanControlMainWindow"));
+        }
         unsafe {
             window.setReleasedWhenClosed(false);
         }

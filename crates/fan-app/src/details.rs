@@ -115,6 +115,14 @@ impl DetailsPage {
         };
         group_filter.setSelectedSegment(0);
         group_filter.setControlSize(NSControlSize::Small);
+        group_filter.setFont(Some(&NSFont::systemFontOfSize(
+            NSFont::smallSystemFontSize(),
+        )));
+        group_filter.setSegmentDistribution(NSSegmentDistribution::Fit);
+        group_filter.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
         group_filter.setAccessibilityLabel(Some(&text("按分组筛选传感器")));
 
         let sort_labels: Vec<_> = SortOrder::ALL.iter().map(|s| text(s.title())).collect();
@@ -129,6 +137,14 @@ impl DetailsPage {
         };
         sort_order.setSelectedSegment(0);
         sort_order.setControlSize(NSControlSize::Small);
+        sort_order.setFont(Some(&NSFont::systemFontOfSize(
+            NSFont::smallSystemFontSize(),
+        )));
+        sort_order.setSegmentDistribution(NSSegmentDistribution::Fit);
+        sort_order.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
         sort_order.setAccessibilityLabel(Some(&text("传感器排序方式")));
 
         let search = NSSearchField::new(mtm);
@@ -136,7 +152,7 @@ impl DetailsPage {
         search.setAccessibilityLabel(Some(&text("搜索传感器")));
         search
             .widthAnchor()
-            .constraintEqualToConstant(172.)
+            .constraintEqualToConstant(148.)
             .setActive(true);
 
         toolbar.addArrangedSubview(&group_filter);

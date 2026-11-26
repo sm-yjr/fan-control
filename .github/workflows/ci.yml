@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        runner: [macos-14, macos-15]
+        runner: [macos-15]
     runs-on: ${{ matrix.runner }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -99,7 +99,7 @@ jobs:
 
   msrv:
     name: Rust 1.85.1 minimum toolchain
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"

@@ -807,6 +807,7 @@ impl Ui {
         let shell = MainShell::new(
             mtm,
             delegate,
+            demo,
             &overview.view,
             &fans.view,
             &smart_placeholder,
@@ -1070,7 +1071,13 @@ impl Ui {
     fn run_smoke_checks(&mut self, delegate: &Delegate) {
         assert!(self.demo);
         // 1. Verify sidebar section switching keeps main window size completely stable.
+        self.shell.window.layoutIfNeeded();
         let initial_frame = self.shell.window.frame();
+        assert!(
+            initial_frame.size.width <= 860.,
+            "main window should stay near default width: {:?}",
+            initial_frame.size
+        );
         for section in Section::ALL {
             self.shell.select(section);
             self.shell.window.layoutIfNeeded();
