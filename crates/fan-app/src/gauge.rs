@@ -137,6 +137,18 @@ impl Bar {
             .setActive(true);
         this
     }
+    pub fn new_flexible(mtm: MainThreadMarker, thickness: f64) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(Ivars {
+            thickness: Cell::new(thickness),
+            ..Ivars::default()
+        });
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.setTranslatesAutoresizingMaskIntoConstraints(false);
+        this.heightAnchor()
+            .constraintEqualToConstant(thickness.max(6.))
+            .setActive(true);
+        this
+    }
     pub fn set(&self, fraction: Option<f64>, color: &NSColor) {
         self.ivars().set(self, fraction, color);
     }
@@ -152,7 +164,7 @@ pub(crate) fn temperature_color(celsius: f64) -> Retained<NSColor> {
     }
 }
 
-// A separate 180-degree tachometer; existing overview rings retain their 270-degree shape.
+// Precision 180-degree tachometer shared by the menu panel and main window.
 define_class!(
     #[unsafe(super=NSView)] #[thread_kind=MainThreadOnly] #[ivars=Ivars]
     pub(crate) struct Arc;
@@ -160,10 +172,23 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw(&self,_dirty:NSRect){
             let b=self.bounds();let t=self.ivars().thickness.get();
-            let radius=(b.size.width-t)/2.;let center=NSPoint::new(b.size.width/2.,t/2.+10.);
+            let radius=((b.size.width-t)/2.).max(4.);
+            let center=NSPoint::new(b.size.width/2.,t/2.+10.);
             let path=|fraction:f64|{let p=NSBezierPath::bezierPath();p.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise(center,radius,180.,180.-180.*fraction,true);p.setLineWidth(t);p.setLineCapStyle(objc2_app_kit::NSLineCapStyle::Round);p};
             NSColor::quaternaryLabelColor().setStroke();path(1.).stroke();
-            if let (Some(f),Some(c))=(self.ivars().fraction.get(),self.ivars().color.borrow().as_ref()){if f>0.005{c.setStroke();path(f).stroke();}}
+            if let (Some(f),Some(c))=(self.ivars().fraction.get(),self.ivars().color.borrow().as_ref()){
+                if f>0.005{
+                    c.setStroke();path(f).stroke();
+                    let angle = (180. - 180. * f).to_radians();
+                    let tip = NSPoint::new(center.x + radius * angle.cos(), center.y + radius * angle.sin());
+                    let dot_r = (t * 0.28).max(2.0);
+                    NSColor::controlBackgroundColor().setFill();
+                    NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                        NSPoint::new(tip.x - dot_r, tip.y - dot_r),
+                        objc2_foundation::NSSize::new(dot_r * 2., dot_r * 2.),
+                    )).fill();
+                }
+            }
         }
     }
 );

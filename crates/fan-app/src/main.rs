@@ -5,7 +5,9 @@ extern "C" fn terminate_signal(_: libc::c_int) {
 }
 mod app_version;
 mod chart;
+mod components;
 mod control_trace;
+mod curve_editor;
 mod dashboard;
 mod dashboard_render;
 mod details;
@@ -21,8 +23,12 @@ mod preferences;
 mod presenter;
 mod sensor_list;
 mod settings;
+mod shell;
+mod sidebar;
+mod status_bar;
 mod storage;
 mod telemetry;
+mod theme;
 mod trend;
 mod ui;
 mod updater;

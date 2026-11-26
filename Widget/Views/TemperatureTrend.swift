@@ -31,7 +31,15 @@ struct TemperatureTrend: View {
                 previous = point.sampledAt; lastX = location.x
             }
             finishArea()
-            context.stroke(line, with: .color(.blue), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            context.stroke(line, with: .color(.blue), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+            if let last = visible.last, let temperature = last.temperature {
+                let x = (last.sampledAt - (end - 600)) / 600 * size.width
+                let y = size.height - (temperature - bottom) / span * size.height
+                let halo = CGRect(x: x - 4, y: y - 4, width: 8, height: 8)
+                let dot = CGRect(x: x - 2.2, y: y - 2.2, width: 4.4, height: 4.4)
+                context.fill(Path(ellipseIn: halo), with: .color(.blue.opacity(0.24)))
+                context.fill(Path(ellipseIn: dot), with: .color(.blue))
+            }
         }.accessibilityLabel(Text("CPU temperature history, past 10 minutes"))
             .overlay(alignment: .center) {
                 if visible.compactMap(\.temperature).count < 2 { Text("Collecting history").font(.system(size: 8)).foregroundStyle(.secondary) }

@@ -1,59 +1,37 @@
-//! Temperature details: headline components, battery and every sensor as a
-//! colored bar, so hot spots stand out without reading numbers.
-use crate::form::{self, caption, spacer, CONTENT};
-use crate::gauge::{temperature_color, Bar};
-use crate::popover::{stack, styled_label, tinted_box, TintedView};
-use crate::ui::{raw_text, text};
-use crate::worker::UiSnapshot;
-use objc2::rc::Retained;
+//! Temperature details: resizable headline KPI tiles, battery summary and
+//! full-height filterable/sortable native sensor table.
+use crate::{
+    components::{flex_spacer, hstack, surface_box, vstack, MetricTile},
+    form::{self, fluid_caption},
+    gauge::{temperature_color, Bar},
+    popover::styled_label,
+    sensor_list::{GroupFilter, SortOrder},
+    theme::{self, spacing, typography, SurfaceStyle},
+    ui::{raw_text, text},
+    worker::UiSnapshot,
+};
+use objc2::{rc::Retained, runtime::AnyObject, sel};
 use objc2_app_kit::*;
-use objc2_foundation::{MainThreadMarker, NSSize};
+use objc2_foundation::{MainThreadMarker, NSArray, NSEdgeInsets, NSSize};
 
-const TILE_GAP: f64 = 10.;
-const TILE: f64 = (CONTENT - TILE_GAP * 3.) / 4.;
-const LIST_HEIGHT: f64 = 250.;
-/// Bars span this range so typical readings spread across the width.
 const COOL: f64 = 20.;
 const HOT: f64 = 110.;
 
-struct Tile {
-    value: Retained<NSTextField>,
-    bar: Retained<Bar>,
-}
-
 pub(crate) struct DetailsPage {
-    pub view: Retained<NSStackView>,
-    cpu: Tile,
-    gpu: Tile,
-    pressure: Tile,
-    rise: Tile,
-    battery_section: Vec<Retained<NSView>>,
+    pub view: Retained<NSView>,
+    cpu: MetricTile,
+    gpu: MetricTile,
+    pressure: MetricTile,
+    rise: MetricTile,
+    battery_card: Retained<NSView>,
     charge: Retained<NSTextField>,
     charge_bar: Retained<Bar>,
     battery_state: Retained<NSTextField>,
     battery_detail: Retained<NSTextField>,
+    pub group_filter: Retained<NSSegmentedControl>,
+    pub sort_order: Retained<NSSegmentedControl>,
     pub search: Retained<NSSearchField>,
     list: crate::sensor_list::SensorList,
-}
-
-fn tile(mtm: MainThreadMarker, title: &str) -> (Retained<TintedView>, Tile) {
-    let content = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
-    content.addArrangedSubview(&styled_label(mtm, title, form::CAPTION, false, true, None));
-    let value = styled_label(mtm, "--", 20., true, false, None);
-    value.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-        20.,
-        unsafe { NSFontWeightMedium },
-    )));
-    value.setAccessibilityLabel(Some(&text(title)));
-    content.addArrangedSubview(&value);
-    let bar = Bar::new(mtm, TILE - 24., 4.);
-    content.addArrangedSubview(&bar);
-    let view = tinted_box(mtm, &content, NSSize::new(12., 10.));
-    view.set_fill(&NSColor::quaternarySystemFillColor());
-    view.widthAnchor()
-        .constraintEqualToConstant(TILE)
-        .setActive(true);
-    (view, Tile { value, bar })
 }
 
 fn fraction(celsius: f64) -> f64 {
@@ -61,98 +39,181 @@ fn fraction(celsius: f64) -> f64 {
 }
 
 impl DetailsPage {
-    pub fn new(mtm: MainThreadMarker) -> Self {
-        let view = form::page(mtm);
-        let tiles = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, TILE_GAP);
-        let (cpu_box, cpu) = tile(mtm, "处理器");
-        let (gpu_box, gpu) = tile(mtm, "图形处理器");
-        let (pressure_box, pressure) = tile(mtm, "系统热压力");
-        let (rise_box, rise) = tile(mtm, "机身升温");
-        for tile in [&cpu_box, &gpu_box, &pressure_box, &rise_box] {
+    pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> Self {
+        let root = NSView::new(mtm);
+        root.setTranslatesAutoresizingMaskIntoConstraints(false);
+
+        let top_stack = vstack(mtm, spacing::MD);
+        top_stack.setTranslatesAutoresizingMaskIntoConstraints(false);
+        top_stack.setEdgeInsets(NSEdgeInsets {
+            top: spacing::XL,
+            left: spacing::XXL,
+            bottom: 0.,
+            right: spacing::XXL,
+        });
+
+        // 4 equal-width KPI tiles.
+        let tiles = hstack(mtm, spacing::MD);
+        tiles.setDistribution(NSStackViewDistribution::FillEqually);
+        let cpu = MetricTile::new(mtm, "处理器", true);
+        let gpu = MetricTile::new(mtm, "图形处理器", true);
+        let pressure = MetricTile::new(mtm, "系统热压力", true);
+        let rise = MetricTile::new(mtm, "机身升温", true);
+        for tile in [&cpu.view, &gpu.view, &pressure.view, &rise.view] {
             tiles.addArrangedSubview(tile);
         }
-        view.addArrangedSubview(&tiles);
-        view.setCustomSpacing_afterView(form::SECTION_GAP, &tiles);
+        top_stack.addArrangedSubview(&tiles);
+        tiles
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&top_stack.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
 
-        let battery_title = form::section_title(mtm, "电池");
-        let charge = styled_label(mtm, "--", 20., true, false, None);
-        charge.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            20.,
-            unsafe { NSFontWeightMedium },
+        // Compact battery card (auto-hidden on desktop Macs).
+        let charge = styled_label(mtm, "—", typography::METRIC_MEDIUM, true, false, None);
+        charge.setFont(Some(&theme::rounded_digits(
+            typography::METRIC_MEDIUM,
+            unsafe { NSFontWeightSemibold },
         )));
-        let charge_bar = Bar::new(mtm, 120., 8.);
-        let battery_words = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 2.);
-        let battery_state = styled_label(mtm, "", form::BODY, false, false, None);
+        let charge_bar = Bar::new(mtm, 110., 7.);
+        let battery_words = vstack(mtm, 2.);
+        let battery_state = styled_label(mtm, "", form::BODY, true, false, None);
         let battery_detail = styled_label(mtm, "", form::CAPTION, false, true, None);
         battery_words.addArrangedSubview(&battery_state);
         battery_words.addArrangedSubview(&battery_detail);
-        let battery_row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 14.);
+        let battery_row = hstack(mtm, 14.);
+        battery_row.addArrangedSubview(&styled_label(
+            mtm,
+            "电池",
+            typography::SMALL,
+            true,
+            true,
+            None,
+        ));
         battery_row.addArrangedSubview(&charge);
         battery_row.addArrangedSubview(&charge_bar);
         battery_row.addArrangedSubview(&battery_words);
-        battery_row.addArrangedSubview(&spacer(mtm));
-        battery_row
+        battery_row.addArrangedSubview(&flex_spacer(mtm));
+        let battery_group =
+            surface_box(mtm, &battery_row, NSSize::new(14., 10.), SurfaceStyle::Card);
+        top_stack.addArrangedSubview(&battery_group);
+        battery_group
             .widthAnchor()
-            .constraintEqualToConstant(form::ROW)
+            .constraintEqualToAnchor_constant(&top_stack.widthAnchor(), -spacing::XXL * 2.)
             .setActive(true);
-        let battery_group = form::group(mtm, &[&battery_row]);
-        view.addArrangedSubview(&battery_title);
-        view.addArrangedSubview(&battery_group);
-        view.setCustomSpacing_afterView(form::SECTION_GAP, &battery_group);
 
-        let header = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
-        header.addArrangedSubview(&form::section_title(mtm, "全部传感器"));
-        header.addArrangedSubview(&spacer(mtm));
+        // Sensor toolbar: group filter pills + sort toggle + search field.
+        let toolbar = hstack(mtm, spacing::SM);
+        let group_labels: Vec<_> = GroupFilter::ALL.iter().map(|g| text(g.title())).collect();
+        let group_filter = unsafe {
+            NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+                &NSArray::from_retained_slice(&group_labels),
+                NSSegmentSwitchTracking::SelectOne,
+                Some(target),
+                Some(sel!(sensorFilterChanged:)),
+                mtm,
+            )
+        };
+        group_filter.setSelectedSegment(0);
+        group_filter.setControlSize(NSControlSize::Small);
+        group_filter.setAccessibilityLabel(Some(&text("按分组筛选传感器")));
+
+        let sort_labels: Vec<_> = SortOrder::ALL.iter().map(|s| text(s.title())).collect();
+        let sort_order = unsafe {
+            NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+                &NSArray::from_retained_slice(&sort_labels),
+                NSSegmentSwitchTracking::SelectOne,
+                Some(target),
+                Some(sel!(sensorFilterChanged:)),
+                mtm,
+            )
+        };
+        sort_order.setSelectedSegment(0);
+        sort_order.setControlSize(NSControlSize::Small);
+        sort_order.setAccessibilityLabel(Some(&text("传感器排序方式")));
+
         let search = NSSearchField::new(mtm);
         search.setPlaceholderString(Some(&text("搜索传感器")));
         search.setAccessibilityLabel(Some(&text("搜索传感器")));
         search
             .widthAnchor()
-            .constraintEqualToConstant(200.)
+            .constraintEqualToConstant(172.)
             .setActive(true);
-        header.addArrangedSubview(&search);
-        header
-            .widthAnchor()
-            .constraintEqualToConstant(CONTENT)
-            .setActive(true);
-        view.addArrangedSubview(&header);
 
-        let list = crate::sensor_list::SensorList::new(mtm, CONTENT, LIST_HEIGHT);
-        let list_box = tinted_box(mtm, &list.scroll, NSSize::new(0., 0.));
-        list_box.set_fill(&NSColor::quaternarySystemFillColor());
-        list_box
+        toolbar.addArrangedSubview(&group_filter);
+        toolbar.addArrangedSubview(&flex_spacer(mtm));
+        toolbar.addArrangedSubview(&sort_order);
+        toolbar.addArrangedSubview(&search);
+        top_stack.addArrangedSubview(&toolbar);
+        toolbar
             .widthAnchor()
-            .constraintEqualToConstant(CONTENT)
+            .constraintEqualToAnchor_constant(&top_stack.widthAnchor(), -spacing::XXL * 2.)
             .setActive(true);
-        list_box
-            .heightAnchor()
-            .constraintEqualToConstant(LIST_HEIGHT)
-            .setActive(true);
-        view.addArrangedSubview(&list_box);
-        view.addArrangedSubview(&caption(
+
+        // Resizable sensor table card filling all remaining vertical space.
+        let list = crate::sensor_list::SensorList::new(mtm, 560., 260.);
+        let list_box = surface_box(mtm, &list.scroll, NSSize::new(0., 0.), SurfaceStyle::Card);
+
+        let footer_note = fluid_caption(
             mtm,
-            "颜色表示温度高低：绿色较凉，黄色温热，橙色偏热，红色过热。芯片在高负载下短时达到 90°C 以上属于正常现象。",
-            CONTENT,
-        ));
-        view.addArrangedSubview(&caption(
-            mtm,
-            "名称按芯片型号核对；未确认的项目保留原始标识，虚拟温度与热余量单独标明。",
-            CONTENT,
-        ));
+            "颜色表示温度高低：绿色较凉，黄色温热，橙色偏热，红色过热。名称按芯片型号核对，未确认项保留原始标识，虚拟温度与热余量单独标明。",
+        );
+        footer_note.setTranslatesAutoresizingMaskIntoConstraints(false);
+
+        root.addSubview(&top_stack);
+        root.addSubview(&list_box);
+        root.addSubview(&footer_note);
+
+        for c in [
+            top_stack
+                .topAnchor()
+                .constraintEqualToAnchor(&root.topAnchor()),
+            top_stack
+                .leadingAnchor()
+                .constraintEqualToAnchor(&root.leadingAnchor()),
+            top_stack
+                .trailingAnchor()
+                .constraintEqualToAnchor(&root.trailingAnchor()),
+            list_box
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&top_stack.bottomAnchor(), spacing::SM),
+            list_box
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&root.leadingAnchor(), spacing::XXL),
+            list_box
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&root.trailingAnchor(), -spacing::XXL),
+            list_box
+                .heightAnchor()
+                .constraintGreaterThanOrEqualToConstant(180.),
+            footer_note
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&list_box.bottomAnchor(), spacing::SM),
+            footer_note
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&root.leadingAnchor(), spacing::XXL),
+            footer_note
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&root.trailingAnchor(), -spacing::XXL),
+            footer_note
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&root.bottomAnchor(), -spacing::LG),
+        ] {
+            c.setActive(true);
+        }
+
         Self {
-            view,
+            view: root,
             cpu,
             gpu,
             pressure,
             rise,
-            battery_section: vec![
-                Retained::into_super(Retained::into_super(battery_title)),
-                Retained::into_super(battery_group),
-            ],
+            battery_card: Retained::into_super(battery_group),
             charge,
             charge_bar,
             battery_state,
             battery_detail,
+            group_filter,
+            sort_order,
             search,
             list,
         }
@@ -163,16 +224,19 @@ impl DetailsPage {
     }
 
     pub fn refresh(&mut self, state: &UiSnapshot, fresh: bool) {
-        let celsius = |tile: &Tile, value: Option<f64>| match value.filter(|_| fresh) {
+        let celsius = |tile: &MetricTile, value: Option<f64>| match value.filter(|_| fresh) {
             Some(value) => {
                 tile.value
                     .setStringValue(&raw_text(&format!("{value:.0}°C")));
-                tile.bar
-                    .set(Some(fraction(value)), &temperature_color(value));
+                if let Some(bar) = &tile.bar {
+                    bar.set(Some(fraction(value)), &temperature_color(value));
+                }
             }
             None => {
-                tile.value.setStringValue(&raw_text("--"));
-                tile.bar.set(None, &NSColor::secondaryLabelColor());
+                tile.value.setStringValue(&raw_text("—"));
+                if let Some(bar) = &tile.bar {
+                    bar.set(None, &NSColor::secondaryLabelColor());
+                }
             }
         };
         celsius(
@@ -191,14 +255,16 @@ impl DetailsPage {
         };
         self.pressure
             .value
-            .setStringValue(&text(if fresh { word } else { "--" }));
+            .setStringValue(&text(if fresh { word } else { "—" }));
         let word_color = if fresh {
             color.clone()
         } else {
             NSColor::labelColor()
         };
         self.pressure.value.setTextColor(Some(&word_color));
-        self.pressure.bar.set(fresh.then_some(level), &color);
+        if let Some(bar) = &self.pressure.bar {
+            bar.set(fresh.then_some(level), &color);
+        }
         let rise = state.thermal.chassis_rise_per_minute;
         if fresh && state.thermal.uses_chassis_sensor && rise.is_finite() {
             self.rise
@@ -209,23 +275,23 @@ impl DetailsPage {
             } else {
                 NSColor::systemGreenColor()
             };
-            self.rise
-                .bar
-                .set(Some((rise.max(0.) / 2.).min(1.)), &rise_color);
+            if let Some(bar) = &self.rise.bar {
+                bar.set(Some((rise.max(0.) / 2.).min(1.)), &rise_color);
+            }
         } else {
-            self.rise.value.setStringValue(&raw_text("--"));
-            self.rise.bar.set(None, &NSColor::secondaryLabelColor());
+            self.rise.value.setStringValue(&raw_text("—"));
+            if let Some(bar) = &self.rise.bar {
+                bar.set(None, &NSColor::secondaryLabelColor());
+            }
         }
 
-        for view in &self.battery_section {
-            view.setHidden(state.battery.is_none());
-        }
+        self.battery_card.setHidden(state.battery.is_none());
         if let Some(battery) = state.battery.as_ref() {
             let charge = battery.charge_percent;
             self.charge.setStringValue(&raw_text(
                 &charge
                     .map(|value| format!("{value:.0}%"))
-                    .unwrap_or_else(|| "--".into()),
+                    .unwrap_or_else(|| "—".into()),
             ));
             let charge_color = if charge.is_some_and(|value| value <= 20.) {
                 NSColor::systemOrangeColor()
@@ -244,9 +310,19 @@ impl DetailsPage {
                 .setStringValue(&raw_text(&detail.join(" · ")));
         }
 
+        let group_filter = GroupFilter::ALL
+            .get(self.group_filter.selectedSegment().max(0) as usize)
+            .copied()
+            .unwrap_or(GroupFilter::All);
+        let sort_order = SortOrder::ALL
+            .get(self.sort_order.selectedSegment().max(0) as usize)
+            .copied()
+            .unwrap_or(SortOrder::Grouped);
         self.list.refresh(
             &state.snapshot.sensors,
             &self.search.stringValue().to_string(),
+            group_filter,
+            sort_order,
             fresh,
         );
     }

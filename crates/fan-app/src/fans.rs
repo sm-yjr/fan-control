@@ -1,25 +1,30 @@
-//! Fans page: one card per fan with a speed ring and its own setting. Changes
-//! apply right away, like the menu bar panel; a slider waits until it settles.
-use crate::form::{self, caption, spacer, CONTENT};
-use crate::gauge::Ring;
-use crate::popover::{stack, styled_label, tinted_box, tone_color, TintedView};
-use crate::presenter::{FanCard, FanChoice, Presentation, Tone};
-use crate::ui::{raw_text, text};
-use objc2::{rc::Retained, runtime::AnyObject, sel, MainThreadOnly};
+//! Fans page: one layered card per fan with a unified 180-degree RPM tachometer,
+//! segmented mode picker, visible target/confirmed telemetry and live speed control.
+use crate::{
+    components::{flex_spacer, hstack, label, surface_box, vstack, SurfaceView},
+    form::{self, fluid_caption, fluid_page},
+    gauge::Arc,
+    popover::styled_label,
+    presenter::{FanCard, FanChoice, Presentation, Tone},
+    theme::{self, spacing, typography, SurfaceStyle},
+    ui::{raw_text, text},
+};
+use objc2::{rc::Retained, runtime::AnyObject, sel};
 use objc2_app_kit::*;
-use objc2_foundation::{MainThreadMarker, NSSize};
+use objc2_foundation::{MainThreadMarker, NSArray, NSSize};
 
-const RING: f64 = 92.;
-const DETAILS: f64 = CONTENT - RING - 28. - 20.;
+const GAUGE_WIDTH: f64 = 148.;
 
 struct Card {
     id: u8,
-    view: Retained<TintedView>,
-    ring: Retained<Ring>,
-    percent: Retained<NSTextField>,
+    view: Retained<SurfaceView>,
+    arc: Retained<Arc>,
+    rpm: Retained<NSTextField>,
+    range_label: Retained<NSTextField>,
     name: Retained<NSTextField>,
     speed: Retained<NSTextField>,
-    choice: Retained<NSPopUpButton>,
+    target_line: Retained<NSTextField>,
+    choice: Retained<NSSegmentedControl>,
     explanation: Retained<NSTextField>,
     fixed: Retained<NSStackView>,
     slider: Retained<NSSlider>,
@@ -35,70 +40,136 @@ pub(crate) struct FansPage {
     items: Vec<Card>,
     empty: Retained<NSTextField>,
     notice: Retained<NSTextField>,
-    notice_box: Retained<TintedView>,
+    notice_box: Retained<SurfaceView>,
 }
 
 fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
-    let ring = Ring::new(mtm, RING, 9.);
-    let percent = styled_label(mtm, "--", 20., true, false, None);
-    percent.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-        20.,
-        unsafe { NSFontWeightMedium },
-    )));
-    let unit = styled_label(mtm, "转速", form::CAPTION, false, true, None);
-    let center = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 0.);
+    // Left column: unified 180° RPM tachometer + hardware bounds.
+    let left = vstack(mtm, 4.);
+    left.setAlignment(NSLayoutAttribute::CenterX);
+    left.widthAnchor()
+        .constraintEqualToConstant(GAUGE_WIDTH)
+        .setActive(true);
+
+    let arc = Arc::new(mtm, GAUGE_WIDTH, theme::layout::GAUGE_TRACK);
+    let center = vstack(mtm, 0.);
     center.setAlignment(NSLayoutAttribute::CenterX);
-    center.addArrangedSubview(&percent);
-    center.addArrangedSubview(&unit);
-    center.setTranslatesAutoresizingMaskIntoConstraints(false);
-    ring.addSubview(&center);
-    center
-        .centerXAnchor()
-        .constraintEqualToAnchor(&ring.centerXAnchor())
-        .setActive(true);
-    center
-        .centerYAnchor()
-        .constraintEqualToAnchor(&ring.centerYAnchor())
-        .setActive(true);
-
-    let details = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 6.);
-    let name = styled_label(mtm, "", 15., true, false, None);
-    let speed = styled_label(mtm, "", form::BODY, false, true, None);
-    details.addArrangedSubview(&name);
-    details.addArrangedSubview(&speed);
-    details.setCustomSpacing_afterView(10., &speed);
-
-    let choice_row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
-    choice_row.addArrangedSubview(&styled_label(
+    if let Some(icon) = theme::symbol_image("fanblades", None, 14.0) {
+        let img = NSImageView::imageViewWithImage(&icon, mtm);
+        img.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        img.widthAnchor()
+            .constraintEqualToConstant(16.)
+            .setActive(true);
+        img.heightAnchor()
+            .constraintEqualToConstant(16.)
+            .setActive(true);
+        center.addArrangedSubview(&img);
+    }
+    let rpm = styled_label(mtm, "—", typography::RPM_DIGITS_COMPACT, true, false, None);
+    rpm.setFont(Some(&theme::rounded_digits(
+        typography::RPM_DIGITS_COMPACT,
+        unsafe { NSFontWeightSemibold },
+    )));
+    center.addArrangedSubview(&rpm);
+    center.addArrangedSubview(&styled_label(
         mtm,
-        "散热方式",
-        form::BODY,
-        false,
-        false,
+        "RPM",
+        typography::MICRO,
+        true,
+        true,
         None,
     ));
-    let choice = NSPopUpButton::initWithFrame_pullsDown(
-        NSPopUpButton::alloc(mtm),
-        crate::ui::rect(0., 0., 150., 26.),
+    center.setTranslatesAutoresizingMaskIntoConstraints(false);
+    arc.addSubview(&center);
+    center
+        .centerXAnchor()
+        .constraintEqualToAnchor(&arc.centerXAnchor())
+        .setActive(true);
+    center
+        .bottomAnchor()
+        .constraintEqualToAnchor_constant(&arc.bottomAnchor(), -4.)
+        .setActive(true);
+    left.addArrangedSubview(&arc);
+
+    let range_label = styled_label(mtm, "", typography::MICRO, false, true, None);
+    range_label.setFont(Some(&theme::rounded_digits(typography::MICRO, unsafe {
+        NSFontWeightRegular
+    })));
+    left.addArrangedSubview(&range_label);
+
+    // Right column: title, live state, target telemetry, 4-segment mode picker & controls.
+    let details = vstack(mtm, spacing::SM);
+    details.setContentCompressionResistancePriority_forOrientation(
+        NSLayoutPriorityDefaultLow,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
+
+    let title_row = hstack(mtm, spacing::SM);
+    let name = label(
+        mtm,
+        "",
+        typography::SECTION,
+        unsafe { NSFontWeightSemibold },
+        false,
         false,
     );
-    if let Some(menu) = choice.menu() {
-        menu.setAutoenablesItems(false);
-    }
-    for option in FanChoice::ALL {
-        choice.addItemWithTitle(&text(option.title()));
-    }
+    let speed = label(
+        mtm,
+        "",
+        typography::CAPTION,
+        unsafe { NSFontWeightRegular },
+        true,
+        false,
+    );
+    title_row.addArrangedSubview(&name);
+    title_row.addArrangedSubview(&flex_spacer(mtm));
+    title_row.addArrangedSubview(&speed);
+    details.addArrangedSubview(&title_row);
+    title_row
+        .widthAnchor()
+        .constraintEqualToAnchor(&details.widthAnchor())
+        .setActive(true);
+
+    let target_line = label(
+        mtm,
+        "",
+        typography::SMALL,
+        unsafe { NSFontWeightRegular },
+        true,
+        true,
+    );
+    target_line.setFont(Some(&theme::rounded_digits(typography::SMALL, unsafe {
+        NSFontWeightRegular
+    })));
+    target_line.setHidden(true);
+    details.addArrangedSubview(&target_line);
+
+    let labels: Vec<_> = FanChoice::ALL
+        .iter()
+        .map(|option| text(option.title()))
+        .collect();
+    let choice = unsafe {
+        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+            &NSArray::from_retained_slice(&labels),
+            NSSegmentSwitchTracking::SelectOne,
+            Some(target),
+            Some(sel!(fanChoice:)),
+            mtm,
+        )
+    };
+    choice.setSegmentDistribution(NSSegmentDistribution::FillEqually);
     choice.setTag(index as isize);
-    unsafe {
-        choice.setTarget(Some(target));
-        choice.setAction(Some(sel!(fanChoice:)));
-    }
-    choice_row.addArrangedSubview(&choice);
-    details.addArrangedSubview(&choice_row);
-    let explanation = caption(mtm, "", DETAILS);
+    details.addArrangedSubview(&choice);
+    choice
+        .widthAnchor()
+        .constraintEqualToAnchor(&details.widthAnchor())
+        .setActive(true);
+
+    let explanation = fluid_caption(mtm, "");
     details.addArrangedSubview(&explanation);
 
-    let slider_row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 10.);
+    // Fixed speed slider block.
+    let slider_row = hstack(mtm, spacing::MD);
     let slider = unsafe {
         NSSlider::sliderWithValue_minValue_maxValue_target_action(
             40.,
@@ -111,21 +182,22 @@ fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
     };
     slider.setTag(index as isize);
     slider.setNumberOfTickMarks(5);
-    slider
-        .widthAnchor()
-        .constraintEqualToConstant(DETAILS - 60.)
-        .setActive(true);
     slider.setAccessibilityHelp(Some(&text(
         "0% 为硬件最低转速，100% 为最高转速。松开后生效。",
     )));
     let fixed_value = styled_label(mtm, "", form::BODY, true, false, None);
-    fixed_value.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-        form::BODY,
-        unsafe { NSFontWeightMedium },
-    )));
+    fixed_value.setFont(Some(&theme::rounded_digits(form::BODY, unsafe {
+        NSFontWeightSemibold
+    })));
+    fixed_value
+        .widthAnchor()
+        .constraintGreaterThanOrEqualToConstant(42.)
+        .setActive(true);
+    fixed_value.setAlignment(NSTextAlignment::Right);
     slider_row.addArrangedSubview(&slider);
     slider_row.addArrangedSubview(&fixed_value);
-    let range = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
+
+    let range = hstack(mtm, spacing::SM);
     range.addArrangedSubview(&styled_label(
         mtm,
         "最安静",
@@ -134,10 +206,13 @@ fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
         true,
         None,
     ));
-    range.addArrangedSubview(&spacer(mtm));
+    range.addArrangedSubview(&flex_spacer(mtm));
     let fixed_hint = styled_label(mtm, "", form::CAPTION, false, true, None);
+    fixed_hint.setFont(Some(&theme::rounded_digits(form::CAPTION, unsafe {
+        NSFontWeightRegular
+    })));
     range.addArrangedSubview(&fixed_hint);
-    range.addArrangedSubview(&spacer(mtm));
+    range.addArrangedSubview(&flex_spacer(mtm));
     range.addArrangedSubview(&styled_label(
         mtm,
         "最凉爽",
@@ -146,14 +221,23 @@ fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
         true,
         None,
     ));
+
+    let fixed = vstack(mtm, 3.);
+    fixed.addArrangedSubview(&slider_row);
+    slider_row
+        .widthAnchor()
+        .constraintEqualToAnchor(&fixed.widthAnchor())
+        .setActive(true);
+    fixed.addArrangedSubview(&range);
     range
         .widthAnchor()
-        .constraintEqualToConstant(DETAILS - 60.)
+        .constraintEqualToAnchor(&fixed.widthAnchor())
         .setActive(true);
-    let fixed = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 2.);
-    fixed.addArrangedSubview(&slider_row);
-    fixed.addArrangedSubview(&range);
     details.addArrangedSubview(&fixed);
+    fixed
+        .widthAnchor()
+        .constraintEqualToAnchor(&details.widthAnchor())
+        .setActive(true);
 
     let curve = unsafe {
         NSButton::buttonWithTitle_target_action(
@@ -166,23 +250,21 @@ fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
     curve.setTag(index as isize);
     details.addArrangedSubview(&curve);
 
-    let content = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 20.);
+    let content = hstack(mtm, spacing::XL);
     content.setAlignment(NSLayoutAttribute::Top);
-    content.addArrangedSubview(&ring);
+    content.addArrangedSubview(&left);
     content.addArrangedSubview(&details);
-    content.addArrangedSubview(&spacer(mtm));
-    let view = tinted_box(mtm, &content, NSSize::new(14., 14.));
-    view.set_fill(&NSColor::quaternarySystemFillColor());
-    view.widthAnchor()
-        .constraintEqualToConstant(CONTENT)
-        .setActive(true);
+
+    let view = surface_box(mtm, &content, NSSize::new(16., 14.), SurfaceStyle::Card);
     Card {
         id: 0,
         view,
-        ring,
-        percent,
+        arc,
+        rpm,
+        range_label,
         name,
         speed,
+        target_line,
         choice,
         explanation,
         fixed,
@@ -196,27 +278,49 @@ fn card(mtm: MainThreadMarker, target: &AnyObject, index: usize) -> Card {
 
 impl FansPage {
     pub fn new(mtm: MainThreadMarker, demo: bool) -> Self {
-        let view = form::page(mtm);
-        view.addArrangedSubview(&caption(
+        let view = fluid_page(mtm);
+        view.setSpacing(spacing::MD);
+        let intro = fluid_caption(
             mtm,
             if demo {
                 "演示模式 · 模拟数据 · 不连接风扇"
             } else {
                 "菜单栏面板会把同一种散热方式用于所有风扇；在这里可以为每个风扇单独设置。"
             },
-            CONTENT,
-        ));
-        let cards = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 12.);
+        );
+        view.addArrangedSubview(&intro);
+
+        let cards = vstack(mtm, spacing::MD);
         view.addArrangedSubview(&cards);
-        let empty = styled_label(mtm, "正在读取风扇…", form::BODY, false, true, Some(CONTENT));
+        cards
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
+
+        let empty = label(
+            mtm,
+            "正在读取风扇…",
+            form::BODY,
+            unsafe { NSFontWeightRegular },
+            true,
+            true,
+        );
         view.addArrangedSubview(&empty);
-        let notice = styled_label(mtm, "", form::CAPTION, false, false, Some(CONTENT - 24.));
-        let notice_box = tinted_box(mtm, &notice, NSSize::new(12., 8.));
+
+        let notice = label(
+            mtm,
+            "",
+            form::CAPTION,
+            unsafe { NSFontWeightRegular },
+            false,
+            true,
+        );
+        let notice_box = surface_box(mtm, &notice, NSSize::new(14., 10.), SurfaceStyle::Well);
+        view.addArrangedSubview(&notice_box);
         notice_box
             .widthAnchor()
-            .constraintEqualToConstant(CONTENT)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
             .setActive(true);
-        view.addArrangedSubview(&notice_box);
         Self {
             view,
             cards,
@@ -236,7 +340,7 @@ impl FansPage {
     pub fn choice(&self, index: isize) -> Option<FanChoice> {
         let card = self.items.get(usize::try_from(index).ok()?)?;
         FanChoice::ALL
-            .get(card.choice.indexOfSelectedItem().max(0) as usize)
+            .get(card.choice.selectedSegment().max(0) as usize)
             .copied()
     }
 
@@ -261,7 +365,6 @@ impl FansPage {
         }
     }
 
-    /// Returns true when cards were added or removed, so the window can resize.
     pub fn refresh(
         &mut self,
         target: &AnyObject,
@@ -276,6 +379,10 @@ impl FansPage {
         while self.items.len() < cards.len() {
             let card = card(mtm, target, self.items.len());
             self.cards.addArrangedSubview(&card.view);
+            card.view
+                .widthAnchor()
+                .constraintEqualToAnchor(&self.cards.widthAnchor())
+                .setActive(true);
             self.items.push(card);
             resized = true;
         }
@@ -300,26 +407,32 @@ impl FansPage {
                 crate::i18n::translate(&data.speed),
                 crate::i18n::translate(&data.detail)
             )));
-            card.speed.setToolTip(
-                if data.target.is_empty() {
-                    None
-                } else {
-                    Some(text(&data.target))
-                }
-                .as_deref(),
-            );
-            card.ring.set(
+            card.target_line.setStringValue(&text(&data.target));
+            card.target_line.setHidden(data.target.is_empty());
+            card.arc.set(
                 data.percent.map(|value| value / 100.),
                 &NSColor::controlAccentColor(),
             );
-            card.percent.setStringValue(&raw_text(
+            card.rpm.setStringValue(&raw_text(
                 &data
-                    .percent
-                    .map(|value| format!("{value:.0}%"))
-                    .unwrap_or_else(|| "--".into()),
+                    .measured_rpm
+                    .map(|rpm| crate::presenter::grouped(rpm.round() as u64))
+                    .unwrap_or_else(|| "—".into()),
             ));
-            card.ring.setAccessibilityElement(true);
-            card.ring.setAccessibilityLabel(Some(&raw_text(&format!(
+            card.range_label.setStringValue(&raw_text(
+                &data
+                    .range
+                    .map(|(lo, hi)| {
+                        format!(
+                            "{}–{} RPM",
+                            crate::presenter::grouped(u64::from(lo)),
+                            crate::presenter::grouped(u64::from(hi))
+                        )
+                    })
+                    .unwrap_or_else(|| crate::i18n::translate("转速范围未知")),
+            ));
+            card.arc.setAccessibilityElement(true);
+            card.arc.setAccessibilityLabel(Some(&raw_text(&format!(
                 "{} {}",
                 crate::i18n::translate(&data.name),
                 crate::i18n::translate(&data.speed)
@@ -327,9 +440,8 @@ impl FansPage {
             let controllable = data.range.is_some();
             card.choice.setEnabled(enabled);
             for index in 1..FanChoice::ALL.len() {
-                if let Some(item) = card.choice.itemAtIndex(index as isize) {
-                    item.setEnabled(controllable && fresh);
-                }
+                card.choice
+                    .setEnabled_forSegment(enabled && controllable && fresh, index as isize);
             }
             card.choice.setAccessibilityLabel(Some(&raw_text(&format!(
                 "{} {}",
@@ -338,12 +450,12 @@ impl FansPage {
             ))));
             if card.shown != Some(data.choice) {
                 if let Some(index) = FanChoice::ALL.iter().position(|c| *c == data.choice) {
-                    card.choice.selectItemAtIndex(index as isize);
+                    card.choice.setSelectedSegment(index as isize);
                 }
                 card.shown = Some(data.choice);
             }
             let choice = FanChoice::ALL
-                .get(card.choice.indexOfSelectedItem().max(0) as usize)
+                .get(card.choice.selectedSegment().max(0) as usize)
                 .copied()
                 .unwrap_or(data.choice);
             card.explanation.setStringValue(&text(choice.explanation()));
@@ -370,13 +482,11 @@ impl FansPage {
             );
         }
         let attention = view.notice.tone != Tone::Good;
-        let tint = tone_color(view.notice.tone);
-        let fill = if attention {
-            tint.colorWithAlphaComponent(crate::popover::tokens::TINT_ALPHA)
+        self.notice_box.set_style(if attention {
+            SurfaceStyle::Banner(view.notice.tone)
         } else {
-            NSColor::quaternarySystemFillColor()
-        };
-        self.notice_box.set_fill(&fill);
+            SurfaceStyle::Well
+        });
         self.notice.setStringValue(&raw_text(&if attention {
             format!(
                 "{}\n{}",

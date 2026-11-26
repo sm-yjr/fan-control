@@ -1,11 +1,14 @@
-//! Compact dashboard. Labels are native accessibility elements; arcs show only tachometer data.
+//! Compact dashboard shared by the menu bar panel. Labels are native
+//! accessibility elements; arcs show only verified tachometer data.
 use crate::{
+    components::{flex_spacer, surface_box, vstack},
     popover::{stack, styled_label, tokens},
     presenter::{FanCard, Presentation},
+    theme::{self, spacing, typography, SurfaceStyle},
     trend::History,
     ui::{raw_text, text},
 };
-use objc2::{define_class, msg_send, rc::Retained, DefinedClass, MainThreadOnly};
+use objc2::{define_class, msg_send, rc::Retained, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSCopying, NSPoint, NSRect, NSSize};
 use std::{cell::RefCell, time::Instant};
@@ -69,8 +72,11 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw(&self,_dirty:NSRect) {
             let b=self.bounds(); let w=(b.size.width-8.).max(1.); let h=(b.size.height-8.).max(1.);
-            NSColor::separatorColor().setStroke(); let axes=NSBezierPath::bezierPath(); axes.setLineWidth(0.5);
-            axes.moveToPoint(NSPoint::new(4.,4.+h)); axes.lineToPoint(NSPoint::new(4.,4.)); axes.lineToPoint(NSPoint::new(4.+w,4.)); axes.stroke();
+            NSColor::separatorColor().colorWithAlphaComponent(0.55).setStroke();
+            let axes=NSBezierPath::bezierPath(); axes.setLineWidth(0.5);
+            axes.moveToPoint(NSPoint::new(4.,4.+h)); axes.lineToPoint(NSPoint::new(4.,4.)); axes.lineToPoint(NSPoint::new(4.+w,4.));
+            axes.moveToPoint(NSPoint::new(4.,4.+h*0.5)); axes.lineToPoint(NSPoint::new(4.+w,4.+h*0.5));
+            axes.stroke();
             let data=self.ivars().plot.borrow();
             let mut segment=Vec::new();
             let paint=|segment:&[(f64,f64)]| {
@@ -78,13 +84,40 @@ define_class!(
                 let path=NSBezierPath::bezierPath(); let first=NSPoint::new(4.+w*segment[0].0,4.+h*segment[0].1);
                 path.moveToPoint(first);
                 for &(x,y) in &segment[1..] { path.lineToPoint(NSPoint::new(4.+w*x,4.+h*y)); }
-                let fill=path.copy(); let last=segment.last().unwrap(); fill.lineToPoint(NSPoint::new(4.+w*last.0,4.)); fill.lineToPoint(NSPoint::new(first.x,4.)); fill.closePath();
-                NSColor::controlAccentColor().colorWithAlphaComponent(0.10).setFill(); fill.fill();
-                NSColor::controlAccentColor().setStroke(); path.setLineWidth(1.8); path.setLineJoinStyle(NSLineJoinStyle::Round); path.stroke();
+                if segment.len() >= 2 {
+                    let fill=path.copy(); let last=segment.last().unwrap();
+                    fill.lineToPoint(NSPoint::new(4.+w*last.0,4.));
+                    fill.lineToPoint(NSPoint::new(first.x,4.));
+                    fill.closePath();
+                    let top = NSColor::controlAccentColor().colorWithAlphaComponent(0.22);
+                    let bottom = NSColor::controlAccentColor().colorWithAlphaComponent(0.02);
+                    if let Some(gradient) = NSGradient::initWithStartingColor_endingColor(
+                        NSGradient::alloc(),
+                        &top,
+                        &bottom,
+                    ) {
+                        gradient.drawInBezierPath_angle(&fill, -90.0);
+                    } else {
+                        NSColor::controlAccentColor().colorWithAlphaComponent(0.10).setFill();
+                        fill.fill();
+                    }
+                }
+                NSColor::controlAccentColor().setStroke();
+                path.setLineWidth(1.8);
+                path.setLineCapStyle(NSLineCapStyle::Round);
+                path.setLineJoinStyle(NSLineJoinStyle::Round);
+                path.stroke();
             };
             for &(x,y) in &data.points { if let Some(y)=y {segment.push((x,y.clamp(0.,1.)));} else {paint(&segment);segment.clear();} }
             paint(&segment);
-            if let Some(&(x,Some(y)))=data.points.last() { NSColor::controlAccentColor().setFill(); NSBezierPath::bezierPathWithOvalInRect(NSRect::new(NSPoint::new(4.+w*x-2.8,4.+h*y.clamp(0.,1.)-2.8),NSSize::new(5.6,5.6))).fill(); }
+            if let Some(&(x,Some(y)))=data.points.last() {
+                let cx = 4. + w * x;
+                let cy = 4. + h * y.clamp(0., 1.);
+                NSColor::controlAccentColor().colorWithAlphaComponent(0.24).setFill();
+                NSBezierPath::bezierPathWithOvalInRect(NSRect::new(NSPoint::new(cx-5.0,cy-5.0),NSSize::new(10.0,10.0))).fill();
+                NSColor::controlAccentColor().setFill();
+                NSBezierPath::bezierPathWithOvalInRect(NSRect::new(NSPoint::new(cx-2.8,cy-2.8),NSSize::new(5.6,5.6))).fill();
+            }
         }
     }
 );
@@ -102,73 +135,61 @@ impl TemperaturePlot {
             .constraintEqualToConstant(width)
             .setActive(true);
         this.heightAnchor()
-            .constraintEqualToConstant(60.)
+            .constraintEqualToConstant(58.)
             .setActive(true);
         this
     }
 }
-struct FanGauge {
-    id: u8,
-    root: Retained<NSStackView>,
-    arc: Retained<crate::gauge::Arc>,
-    name: Retained<NSTextField>,
-    rpm: Retained<NSTextField>,
-    detail: Retained<NSTextField>,
+
+pub(crate) struct FanGauge {
+    pub id: u8,
+    pub root: Retained<NSStackView>,
+    pub arc: Retained<crate::gauge::Arc>,
+    pub name: Retained<NSTextField>,
+    pub rpm: Retained<NSTextField>,
+    pub detail: Retained<NSTextField>,
 }
 impl FanGauge {
-    fn new(mtm: MainThreadMarker, id: u8, width: f64) -> Self {
-        let root = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 5.);
+    pub fn new(mtm: MainThreadMarker, id: u8, width: f64) -> Self {
+        let root = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
         root.setAlignment(NSLayoutAttribute::CenterX);
         root.widthAnchor()
             .constraintEqualToConstant(width)
             .setActive(true);
-        let name = styled_label(mtm, "", tokens::BODY, true, false, Some(width));
+        let name = styled_label(mtm, "", typography::CAPTION, true, false, Some(width));
         name.setAlignment(NSTextAlignment::Center);
         root.addArrangedSubview(&name);
         let arc = crate::gauge::Arc::new(mtm, width, tokens::GAUGE_TRACK);
         let center = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 0.);
         center.setAlignment(NSLayoutAttribute::CenterX);
-        if let Some(icon) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &raw_text("fanblades"),
-            None,
-        ) {
+        if let Some(icon) = theme::symbol_image("fanblades", None, 15.0) {
             let image = NSImageView::imageViewWithImage(&icon, mtm);
+            image.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
             image
                 .heightAnchor()
-                .constraintEqualToConstant(20.)
+                .constraintEqualToConstant(18.)
                 .setActive(true);
             image
                 .widthAnchor()
-                .constraintEqualToConstant(20.)
+                .constraintEqualToConstant(18.)
                 .setActive(true);
             center.addArrangedSubview(&image);
         }
-        let rpm = styled_label(
-            mtm,
-            "—",
-            if width < 160. {
-                tokens::RPM_DIGITS_COMPACT
-            } else {
-                tokens::RPM_DIGITS
-            },
-            true,
-            false,
-            None,
-        );
-        rpm.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            if width < 160. {
-                tokens::RPM_DIGITS_COMPACT
-            } else {
-                tokens::RPM_DIGITS
-            },
-            unsafe { NSFontWeightSemibold },
-        )));
+        let digit_size = if width < 150. {
+            typography::RPM_DIGITS_COMPACT
+        } else {
+            typography::RPM_DIGITS
+        };
+        let rpm = styled_label(mtm, "—", digit_size, true, false, None);
+        rpm.setFont(Some(&theme::rounded_digits(digit_size, unsafe {
+            NSFontWeightSemibold
+        })));
         center.addArrangedSubview(&rpm);
         center.addArrangedSubview(&styled_label(
             mtm,
             "RPM",
-            tokens::CAPTION,
-            false,
+            typography::MICRO,
+            true,
             true,
             None,
         ));
@@ -195,7 +216,7 @@ impl FanGauge {
             detail,
         }
     }
-    fn refresh(&self, card: &FanCard) {
+    pub fn refresh(&self, card: &FanCard) {
         self.name.setStringValue(&raw_text(&card.name));
         self.rpm.setStringValue(&raw_text(
             &card
@@ -239,78 +260,84 @@ pub(crate) struct Dashboard {
     endpoint: Retained<NSTextField>,
     fan_rows: Retained<NSStackView>,
     gauges: Vec<FanGauge>,
-    width: f64,
+    fan_inner_width: f64,
 }
 impl Dashboard {
     pub fn new(mtm: MainThreadMarker, width: f64) -> Self {
-        let view = stack(
-            mtm,
-            NSUserInterfaceLayoutOrientation::Vertical,
-            tokens::SECTION_GAP,
-        );
+        let view = vstack(mtm, spacing::MD);
         view.widthAnchor()
             .constraintEqualToConstant(width)
             .setActive(true);
-        let hero = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 16.);
+
+        // Card 1: Chip temperature + 10-minute trend.
+        let card_pad = 12.;
+        let inner = width - card_pad * 2.;
+        let left_width = if width < 330. { 110. } else { 124. };
+        let hero = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 12.);
         hero.setAlignment(NSLayoutAttribute::CenterY);
-        let left = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
+        let left = vstack(mtm, 3.);
         left.addArrangedSubview(&styled_label(
             mtm,
             "芯片温度",
-            tokens::HEADLINE,
+            typography::CAPTION,
             true,
-            false,
+            true,
             None,
         ));
-        let temperature = styled_label(
-            mtm,
-            "—",
-            if width < 330. {
-                tokens::DASHBOARD_HERO_COMPACT
-            } else {
-                tokens::DASHBOARD_HERO
-            },
-            true,
-            false,
-            None,
-        );
-        temperature.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            if width < 330. {
-                tokens::DASHBOARD_HERO_COMPACT
-            } else {
-                tokens::DASHBOARD_HERO
-            },
-            unsafe { NSFontWeightSemibold },
-        )));
+        let hero_size = if width < 330. {
+            typography::DISPLAY_HERO_COMPACT
+        } else {
+            typography::DISPLAY_HERO
+        };
+        let temperature = styled_label(mtm, "—", hero_size, true, false, None);
+        temperature.setFont(Some(&theme::rounded_digits(hero_size, unsafe {
+            NSFontWeightSemibold
+        })));
         let reading = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 2.);
         reading.setAlignment(NSLayoutAttribute::FirstBaseline);
         reading.addArrangedSubview(&temperature);
-        reading.addArrangedSubview(&styled_label(mtm, "°C", 24., false, false, None));
-        left.addArrangedSubview(&reading);
-        let caption = styled_label(mtm, "正在检测…", tokens::CAPTION, false, true, Some(128.));
-        left.addArrangedSubview(&caption);
-        left.widthAnchor()
-            .constraintEqualToConstant(128.)
-            .setActive(true);
-        hero.addArrangedSubview(&left);
-        let chart_width = width - 144.;
-        let right = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
-        right.addArrangedSubview(&styled_label(
+        reading.addArrangedSubview(&styled_label(
             mtm,
-            "温度趋势",
-            tokens::CAPTION,
+            "°C",
+            if width < 330. { 20. } else { 22. },
             false,
             true,
             None,
         ));
+        left.addArrangedSubview(&reading);
+        let caption = styled_label(
+            mtm,
+            "正在检测…",
+            typography::SMALL,
+            false,
+            true,
+            Some(left_width),
+        );
+        left.addArrangedSubview(&caption);
+        left.widthAnchor()
+            .constraintEqualToConstant(left_width)
+            .setActive(true);
+        hero.addArrangedSubview(&left);
+
+        let chart_width = (inner - left_width - 12.).max(110.);
+        let right = vstack(mtm, 3.);
+        right.addArrangedSubview(&styled_label(
+            mtm,
+            "温度趋势",
+            typography::SMALL,
+            false,
+            true,
+            None,
+        ));
+
         let row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 4.);
-        let axis = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 30.);
+        let axis = vstack(mtm, 28.);
         let high = styled_label(mtm, "—", tokens::PLOT_LABEL, false, true, Some(25.));
         let low = styled_label(mtm, "—", tokens::PLOT_LABEL, false, true, Some(25.));
         axis.addArrangedSubview(&high);
         axis.addArrangedSubview(&low);
         row.addArrangedSubview(&axis);
-        let chart = TemperaturePlot::new(mtm, chart_width - 29.);
+        let chart = TemperaturePlot::new(mtm, (chart_width - 29.).max(60.));
         row.addArrangedSubview(&chart);
         right.addArrangedSubview(&row);
         let timeline = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 2.);
@@ -318,32 +345,68 @@ impl Dashboard {
             .widthAnchor()
             .constraintEqualToConstant(chart_width)
             .setActive(true);
-        timeline.addArrangedSubview(&styled_label(mtm, "10 分钟前", 10., false, true, None));
+        timeline.addArrangedSubview(&styled_label(
+            mtm,
+            "10 分钟前",
+            typography::MICRO,
+            false,
+            true,
+            None,
+        ));
         timeline.addArrangedSubview(&spacer(mtm));
-        timeline.addArrangedSubview(&styled_label(mtm, "现在", 10., false, true, None));
+        timeline.addArrangedSubview(&styled_label(
+            mtm,
+            "现在",
+            typography::MICRO,
+            false,
+            true,
+            None,
+        ));
         right.addArrangedSubview(&timeline);
-        let endpoint = styled_label(mtm, "", 10., true, true, Some(chart_width));
+        let endpoint = styled_label(mtm, "", typography::MICRO, true, true, Some(chart_width));
+        endpoint.setFont(Some(&theme::rounded_digits(typography::MICRO, unsafe {
+            NSFontWeightSemibold
+        })));
         endpoint.setAlignment(NSTextAlignment::Right);
         right.addArrangedSubview(&endpoint);
         hero.addArrangedSubview(&right);
-        view.addArrangedSubview(&hero);
-        view.addArrangedSubview(&separator(mtm, width));
-        view.addArrangedSubview(&styled_label(
-            mtm,
-            "风扇转速",
-            tokens::HEADLINE,
-            true,
-            false,
-            None,
-        ));
-        let fan_rows = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 10.);
-        fan_rows
+
+        let thermal_card = surface_box(mtm, &hero, NSSize::new(card_pad, 12.), SurfaceStyle::Card);
+        thermal_card
             .widthAnchor()
             .constraintEqualToConstant(width)
             .setActive(true);
+        view.addArrangedSubview(&thermal_card);
+
+        // Card 2: Fan gauges.
+        let fans_inner = vstack(mtm, spacing::SM);
+        fans_inner.addArrangedSubview(&styled_label(
+            mtm,
+            "风扇转速",
+            typography::CAPTION,
+            true,
+            true,
+            None,
+        ));
+        let fan_rows = vstack(mtm, 10.);
+        fan_rows
+            .widthAnchor()
+            .constraintEqualToConstant(inner)
+            .setActive(true);
         fan_rows.setAlignment(NSLayoutAttribute::CenterX);
-        view.addArrangedSubview(&fan_rows);
-        view.addArrangedSubview(&separator(mtm, width));
+        fans_inner.addArrangedSubview(&fan_rows);
+        let fans_card = surface_box(
+            mtm,
+            &fans_inner,
+            NSSize::new(card_pad, 12.),
+            SurfaceStyle::Card,
+        );
+        fans_card
+            .widthAnchor()
+            .constraintEqualToConstant(width)
+            .setActive(true);
+        view.addArrangedSubview(&fans_card);
+
         Self {
             view,
             temperature,
@@ -354,7 +417,7 @@ impl Dashboard {
             endpoint,
             fan_rows,
             gauges: Vec::new(),
-            width,
+            fan_inner_width: inner,
         }
     }
     pub fn refresh(
@@ -371,6 +434,12 @@ impl Dashboard {
                 .map(|v| format!("{v:.0}"))
                 .unwrap_or_else(|| "—".into()),
         ));
+        let temp_color = presentation
+            .temperature
+            .filter(|v| *v >= 85.)
+            .map(crate::gauge::temperature_color)
+            .unwrap_or_else(NSColor::labelColor);
+        self.temperature.setTextColor(Some(&temp_color));
         self.temperature.setAccessibilityLabel(Some(&raw_text(
             &presentation
                 .temperature
@@ -432,9 +501,10 @@ impl Dashboard {
                     None,
                 ));
             }
-            let gauge_width = (self.width - 18.) / 2.;
+            let gap = 14.;
+            let gauge_width = (self.fan_inner_width - gap) / 2.;
             for pair in cards.chunks(2) {
-                let row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 18.);
+                let row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, gap);
                 row.setAlignment(NSLayoutAttribute::Top);
                 for card in pair {
                     let g = FanGauge::new(mtm, card.id, gauge_width);
@@ -476,28 +546,20 @@ impl Dashboard {
             assert_eq!(g.name.stringValue().to_string(), c.name);
             assert!(g.arc.frame().size.width > 0.);
             assert!(g.rpm.frame().size.height > 0.);
-            assert!(g.root.frame().size.width <= self.width + 0.5);
+            assert!(g.root.frame().size.width <= self.fan_inner_width + 0.5);
         }
         if self.gauges.len() == 1 {
             let frame = self.gauges[0]
                 .root
                 .convertRect_toView(self.gauges[0].root.bounds(), Some(&self.fan_rows));
-            assert!((frame.origin.x + frame.size.width / 2. - self.width / 2.).abs() < 2.);
+            assert!(
+                (frame.origin.x + frame.size.width / 2. - self.fan_inner_width / 2.).abs() < 2.
+            );
         }
     }
 }
 pub(crate) fn spacer(mtm: MainThreadMarker) -> Retained<NSView> {
-    let v = NSView::new(mtm);
-    v.setContentHuggingPriority_forOrientation(1., NSLayoutConstraintOrientation::Horizontal);
-    v
-}
-pub(crate) fn separator(mtm: MainThreadMarker, width: f64) -> Retained<NSBox> {
-    let v = NSBox::new(mtm);
-    v.setBoxType(NSBoxType::Separator);
-    v.widthAnchor()
-        .constraintEqualToConstant(width)
-        .setActive(true);
-    v
+    flex_spacer(mtm)
 }
 
 #[cfg(test)]

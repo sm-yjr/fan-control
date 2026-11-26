@@ -1,8 +1,11 @@
 //! A view-based native table: AppKit owns scrolling and recycles offscreen cells.
 //! Sampling updates data for every row, but touches only instantiated visible cells.
-use crate::form;
-use crate::gauge::{temperature_color, Bar};
-use crate::ui::{raw_text, rect, text};
+use crate::{
+    form,
+    gauge::{temperature_color, Bar},
+    theme,
+    ui::{raw_text, rect, text},
+};
 use fan_core::{Sensor, SensorGroup};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::ProtocolObject, DefinedClass, MainThreadOnly,
@@ -11,11 +14,63 @@ use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSSize};
 use std::cell::{Cell, RefCell};
 
-const ROW_HEIGHT: f64 = 36.;
-const BAR_WIDTH: f64 = 150.;
-const VALUE_WIDTH: f64 = 56.;
+const ROW_HEIGHT: f64 = 38.;
+const BAR_WIDTH: f64 = 156.;
+const VALUE_WIDTH: f64 = 60.;
 const CELL_ID: &str = "SensorReading";
 const HEADER_ID: &str = "SensorGroup";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GroupFilter {
+    #[default]
+    All,
+    Cpu,
+    Gpu,
+    System,
+    Other,
+}
+
+impl GroupFilter {
+    pub const ALL: [Self; 5] = [Self::All, Self::Cpu, Self::Gpu, Self::System, Self::Other];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::All => "全部",
+            Self::Cpu => "处理器",
+            Self::Gpu => "图形",
+            Self::System => "机身",
+            Self::Other => "其他",
+        }
+    }
+
+    fn matches(self, group: SensorGroup) -> bool {
+        match self {
+            Self::All => true,
+            Self::Cpu => group == SensorGroup::Cpu,
+            Self::Gpu => group == SensorGroup::Gpu,
+            Self::System => group == SensorGroup::System,
+            Self::Other => group == SensorGroup::Other,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SortOrder {
+    #[default]
+    Grouped,
+    HottestFirst,
+}
+
+impl SortOrder {
+    pub const ALL: [Self; 2] = [Self::Grouped, Self::HottestFirst];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Grouped => "按分组",
+            Self::HottestFirst => "按最热",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum Entry {
@@ -56,46 +111,88 @@ fn is_headroom(sensor: &Sensor) -> bool {
     sensor.name == "CPU 热余量（非绝对温度）"
 }
 
-fn entries(sensors: &[Sensor], filter: &str, fresh: bool) -> Vec<Entry> {
-    let mut sensors: Vec<_> = sensors
+fn entries(
+    sensors: &[Sensor],
+    filter: &str,
+    group_filter: GroupFilter,
+    sort_order: SortOrder,
+    fresh: bool,
+) -> Vec<Entry> {
+    let mut sensors: Vec<Sensor> = sensors
         .iter()
         .filter(|sensor| {
-            filter.is_empty()
-                || sensor.key.to_lowercase().contains(filter)
-                || sensor.name.to_lowercase().contains(filter)
-                || display_name(sensor).to_lowercase().contains(filter)
+            group_filter.matches(sensor.group)
+                && (filter.is_empty()
+                    || sensor.key.to_lowercase().contains(filter)
+                    || sensor.name.to_lowercase().contains(filter)
+                    || display_name(sensor).to_lowercase().contains(filter))
+        })
+        .cloned()
+        .map(|mut sensor| {
+            sensor.value = sensor
+                .value
+                .filter(|value| fresh && fan_core::valid_temperature(*value));
+            sensor
         })
         .collect();
-    sensors.sort_by(|a, b| {
-        group(a.group)
-            .0
-            .cmp(&group(b.group).0)
-            .then(a.key.cmp(&b.key))
-    });
-    let mut rows = Vec::with_capacity(sensors.len() + 4);
-    let mut previous = None;
-    for sensor in sensors {
-        if previous != Some(sensor.group) {
-            rows.push(Entry::Header(group(sensor.group).1.into()));
-            previous = Some(sensor.group);
-        }
-        let mut sensor = sensor.clone();
-        sensor.value = sensor
-            .value
-            .filter(|value| fresh && fan_core::valid_temperature(*value));
-        rows.push(Entry::Reading(sensor));
-    }
-    if rows.is_empty() {
-        rows.push(Entry::Header(
-            if filter.is_empty() {
-                "正在读取传感器…"
-            } else {
-                "没有匹配的传感器。"
+
+    match sort_order {
+        SortOrder::Grouped => {
+            sensors.sort_by(|a, b| {
+                group(a.group)
+                    .0
+                    .cmp(&group(b.group).0)
+                    .then(a.key.cmp(&b.key))
+            });
+            let mut rows = Vec::with_capacity(sensors.len() + 4);
+            let mut previous = None;
+            for sensor in sensors {
+                if previous != Some(sensor.group) {
+                    rows.push(Entry::Header(group(sensor.group).1.into()));
+                    previous = Some(sensor.group);
+                }
+                rows.push(Entry::Reading(sensor));
             }
-            .into(),
-        ));
+            if rows.is_empty() {
+                rows.push(Entry::Header(
+                    if filter.is_empty() && group_filter == GroupFilter::All {
+                        "正在读取传感器…"
+                    } else {
+                        "没有匹配的传感器。"
+                    }
+                    .into(),
+                ));
+            }
+            rows
+        }
+        SortOrder::HottestFirst => {
+            // Headroom is a margin rather than an absolute temperature, so sort it below real temperatures.
+            sensors.sort_by(|a, b| {
+                let rank = |s: &Sensor| match s.value {
+                    Some(v) if !is_headroom(s) => (0u8, v),
+                    Some(v) => (1u8, v),
+                    None => (2u8, -1.0),
+                };
+                let (ra, va) = rank(a);
+                let (rb, vb) = rank(b);
+                ra.cmp(&rb)
+                    .then_with(|| vb.total_cmp(&va))
+                    .then_with(|| a.key.cmp(&b.key))
+            });
+            if sensors.is_empty() {
+                vec![Entry::Header(
+                    if filter.is_empty() && group_filter == GroupFilter::All {
+                        "正在读取传感器…"
+                    } else {
+                        "没有匹配的传感器。"
+                    }
+                    .into(),
+                )]
+            } else {
+                sensors.into_iter().map(Entry::Reading).collect()
+            }
+        }
     }
-    rows
 }
 
 struct ReadingIvars {
@@ -130,10 +227,9 @@ impl ReadingCell {
         let name = field(mtm, form::BODY, false);
         let key = field(mtm, form::CAPTION, true);
         let value = field(mtm, form::BODY, false);
-        value.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            form::BODY,
-            unsafe { NSFontWeightRegular },
-        )));
+        value.setFont(Some(&theme::rounded_digits(form::BODY, unsafe {
+            NSFontWeightMedium
+        })));
         value.setAlignment(NSTextAlignment::Right);
         let bar = Bar::new(mtm, BAR_WIDTH, 6.);
         // Local frame layout avoids an Auto Layout graph across the whole table.
@@ -147,23 +243,23 @@ impl ReadingCell {
         let this: Retained<Self> =
             unsafe { msg_send![super(this), initWithFrame: rect(0., 0., width, ROW_HEIGHT)] };
         this.setIdentifier(Some(&raw_text(CELL_ID)));
-        let words_width = (width - BAR_WIDTH - VALUE_WIDTH - 44.).max(30.);
+        let words_width = (width - BAR_WIDTH - VALUE_WIDTH - 48.).max(30.);
         let ivars = this.ivars();
-        ivars.name.setFrame(rect(12., 17., words_width, 17.));
-        ivars.key.setFrame(rect(12., 2., words_width, 14.));
+        ivars.name.setFrame(rect(14., 18., words_width, 17.));
+        ivars.key.setFrame(rect(14., 3., words_width, 14.));
         for field in [&ivars.name, &ivars.key] {
             field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
             this.addSubview(field);
         }
         ivars.bar.setFrame(rect(
-            width - VALUE_WIDTH - BAR_WIDTH - 20.,
-            14.,
+            width - VALUE_WIDTH - BAR_WIDTH - 22.,
+            15.,
             BAR_WIDTH,
             8.,
         ));
         ivars
             .value
-            .setFrame(rect(width - VALUE_WIDTH - 12., 9., VALUE_WIDTH, 18.));
+            .setFrame(rect(width - VALUE_WIDTH - 14., 10., VALUE_WIDTH, 18.));
         ivars
             .bar
             .setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
@@ -191,7 +287,6 @@ impl ReadingCell {
             Some(value) => {
                 set_text(&ivars.value, &format!("{value:.1}°C"));
                 if is_headroom(sensor) {
-                    // A larger margin means more headroom, not a hotter chip.
                     ivars.bar.set(None, &NSColor::secondaryLabelColor());
                 } else {
                     ivars.bar.set(
@@ -205,7 +300,6 @@ impl ReadingCell {
                 ivars.bar.set(None, &NSColor::secondaryLabelColor());
             }
         }
-        // NSTableView exposes real cell controls and selection to VoiceOver.
         ivars.value.setAccessibilityLabel(Some(&raw_text(&format!(
             "{} [{}]",
             display_name(sensor),
@@ -298,8 +392,11 @@ impl Source {
                         );
                         cell.setIdentifier(Some(&id));
                         let label = field(self.mtm(), form::CAPTION, true);
-                        label.setFont(Some(&NSFont::boldSystemFontOfSize(form::CAPTION)));
-                        label.setFrame(rect(12., 9., width - 24., 18.));
+                        label.setFont(Some(&NSFont::systemFontOfSize_weight(
+                            form::CAPTION,
+                            unsafe { NSFontWeightSemibold },
+                        )));
+                        label.setFrame(rect(14., 10., width - 28., 18.));
                         label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
                         cell.addSubview(&label);
                         unsafe {
@@ -319,15 +416,17 @@ impl Source {
 pub(crate) struct SensorList {
     pub scroll: Retained<NSScrollView>,
     table: Retained<NSTableView>,
-    // AppKit's delegate/dataSource are weak. Keep this alive as long as the table.
     source: Retained<Source>,
     filter: String,
+    group_filter: GroupFilter,
+    sort_order: SortOrder,
 }
 
 impl SensorList {
     pub fn new(mtm: MainThreadMarker, width: f64, height: f64) -> Self {
         let scroll =
             NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., width, height));
+        scroll.setTranslatesAutoresizingMaskIntoConstraints(false);
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
         scroll.setDrawsBackground(false);
@@ -346,6 +445,7 @@ impl SensorList {
         let column =
             NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), &raw_text(CELL_ID));
         column.setWidth(width);
+        column.setResizingMask(NSTableColumnResizingOptions::AutoresizingMask);
         table.addTableColumn(&column);
         let source = Source::alloc(mtm).set_ivars(SourceIvars::default());
         let source: Retained<Source> = unsafe { msg_send![super(source), init] };
@@ -353,20 +453,27 @@ impl SensorList {
             table.setDataSource(Some(ProtocolObject::from_ref(&*source)));
             table.setDelegate(Some(ProtocolObject::from_ref(&*source)));
         }
-        // Leave the document frame under NSScrollView/NSTableView control. Never
-        // constrain its origin to NSClipView's scrolling bounds.
         scroll.setDocumentView(Some(&table));
         Self {
             scroll,
             table,
             source,
             filter: String::new(),
+            group_filter: GroupFilter::All,
+            sort_order: SortOrder::Grouped,
         }
     }
 
-    pub fn refresh(&mut self, sensors: &[Sensor], filter: &str, fresh: bool) {
+    pub fn refresh(
+        &mut self,
+        sensors: &[Sensor],
+        filter: &str,
+        group_filter: GroupFilter,
+        sort_order: SortOrder,
+        fresh: bool,
+    ) {
         let filter = filter.trim().to_lowercase();
-        let next = entries(sensors, &filter, fresh);
+        let next = entries(sensors, &filter, group_filter, sort_order, fresh);
         let changed = {
             let previous = self.source.ivars().rows.borrow();
             previous.len() != next.len()
@@ -375,7 +482,10 @@ impl SensorList {
         self.source.ivars().rows.replace(next);
         if changed {
             self.table.reloadData();
-            if filter != self.filter {
+            if filter != self.filter
+                || group_filter != self.group_filter
+                || sort_order != self.sort_order
+            {
                 self.table.scrollRowToVisible(0);
             }
         } else {
@@ -400,12 +510,13 @@ impl SensorList {
             }
         }
         self.filter = filter;
+        self.group_filter = group_filter;
+        self.sort_order = sort_order;
     }
 }
 
 impl SensorList {
     /// Runs only from --ui-smoke on the real details tab, using synthetic data.
-    /// Exercises the production scroll container, native layout and cell reuse.
     pub(crate) fn verify_native_list(&mut self, window: &NSWindow) {
         let list = self;
         let mut sensors: Vec<_> = (0..1000)
@@ -416,7 +527,7 @@ impl SensorList {
                 value: Some(45.),
             })
             .collect();
-        list.refresh(&sensors, "", true);
+        list.refresh(&sensors, "", GroupFilter::All, SortOrder::Grouped, true);
         window.layoutIfNeeded();
         window.displayIfNeeded();
         assert_eq!(list.table.numberOfRows(), 1001);
@@ -430,7 +541,7 @@ impl SensorList {
             durations.push(started.elapsed().as_secs_f64() * 1000.);
             let before = list.scroll.contentView().bounds().origin;
             sensors[(index - 1) as usize].value = Some(76.5);
-            list.refresh(&sensors, "", true);
+            list.refresh(&sensors, "", GroupFilter::All, SortOrder::Grouped, true);
             window.layoutIfNeeded();
             assert_eq!(
                 list.scroll.contentView().bounds().origin,
@@ -443,7 +554,7 @@ impl SensorList {
                 .expect("visible cell");
             let cell = view.downcast::<ReadingCell>().expect("reading cell");
             assert_eq!(cell.ivars().value.stringValue().to_string(), "76.5°C");
-            list.refresh(&sensors, "", false);
+            list.refresh(&sensors, "", GroupFilter::All, SortOrder::Grouped, false);
             assert_eq!(
                 cell.ivars().value.stringValue().to_string(),
                 "--",
@@ -455,7 +566,7 @@ impl SensorList {
             created < 100,
             "1000 readings must use a bounded set of cells: {created}"
         );
-        list.refresh(&sensors, "x999", true);
+        list.refresh(&sensors, "x999", GroupFilter::All, SortOrder::Grouped, true);
         window.layoutIfNeeded();
         window.displayIfNeeded();
         assert_eq!(list.table.numberOfRows(), 2);
@@ -466,18 +577,34 @@ impl SensorList {
             .downcast::<ReadingCell>()
             .expect("reading cell");
         assert_eq!(cell.ivars().key.stringValue().to_string(), "X999");
-        // The value changed while this row was offscreen; reuse must show the latest.
         assert_eq!(cell.ivars().value.stringValue().to_string(), "76.5°C");
-        list.refresh(&sensors, "no match", true);
+        list.refresh(
+            &sensors,
+            "no match",
+            GroupFilter::All,
+            SortOrder::Grouped,
+            true,
+        );
         window.layoutIfNeeded();
         window.displayIfNeeded();
         assert_eq!(list.table.numberOfRows(), 1);
-        list.refresh(&sensors, "", true);
+        // Exercise hottest-first sort mode.
+        list.refresh(
+            &sensors,
+            "",
+            GroupFilter::All,
+            SortOrder::HottestFirst,
+            true,
+        );
+        window.layoutIfNeeded();
+        window.displayIfNeeded();
+        assert_eq!(list.table.numberOfRows(), 1000);
+        list.refresh(&sensors, "", GroupFilter::All, SortOrder::Grouped, true);
         window.layoutIfNeeded();
         window.displayIfNeeded();
         assert_eq!(list.table.numberOfRows(), 1001);
         let max_ms = durations.into_iter().fold(0_f64, f64::max);
-        println!("Native sensor table verified: 1000 readings, {created} cells allocated across 8 scrolls; slowest synchronous layout/display {max_ms:.2} ms; fresh/stale values, scroll position and search passed");
+        println!("Native sensor table verified: 1000 readings, {created} cells allocated across 8 scrolls; slowest synchronous layout/display {max_ms:.2} ms; fresh/stale values, scroll position, sort and search passed");
     }
 }
 
@@ -499,19 +626,72 @@ mod tests {
             sensor("Tp01", SensorGroup::Cpu, Some(65.)),
             sensor("Tp02", SensorGroup::Cpu, Some(f64::NAN)),
         ];
-        let rows = entries(&sensors, "", true);
+        let rows = entries(&sensors, "", GroupFilter::All, SortOrder::Grouped, true);
         assert!(matches!(&rows[1], Entry::Reading(s) if s.key == "Tp01" && s.value == Some(65.)));
         assert!(matches!(&rows[2], Entry::Reading(s) if s.key == "Tp02" && s.value.is_none()));
-        assert_eq!(entries(&sensors, "tp01", true).len(), 2);
-        assert_eq!(entries(&sensors, "sensor zz", true).len(), 2);
         assert_eq!(
-            entries(&sensors, "absent", true),
+            entries(&sensors, "tp01", GroupFilter::All, SortOrder::Grouped, true).len(),
+            2
+        );
+        assert_eq!(
+            entries(
+                &sensors,
+                "sensor zz",
+                GroupFilter::All,
+                SortOrder::Grouped,
+                true
+            )
+            .len(),
+            2
+        );
+        assert_eq!(
+            entries(
+                &sensors,
+                "absent",
+                GroupFilter::All,
+                SortOrder::Grouped,
+                true
+            ),
             vec![Entry::Header("没有匹配的传感器。".into())]
         );
-        assert!(entries(&sensors, "", false)
-            .iter()
-            .all(|row| !matches!(row, Entry::Reading(s) if s.value.is_some())));
+        assert!(
+            entries(&sensors, "", GroupFilter::All, SortOrder::Grouped, false)
+                .iter()
+                .all(|row| !matches!(row, Entry::Reading(s) if s.value.is_some()))
+        );
     }
+
+    #[test]
+    fn group_filter_and_hottest_sort_work_accurately() {
+        let sensors = [
+            sensor("ZZ01", SensorGroup::Other, Some(40.)),
+            sensor("Tp01", SensorGroup::Cpu, Some(65.)),
+            sensor("Tg01", SensorGroup::Gpu, Some(82.)),
+            Sensor {
+                key: "Th01".into(),
+                name: "CPU 热余量（非绝对温度）".into(),
+                group: SensorGroup::Cpu,
+                value: Some(95.),
+            },
+        ];
+        let cpu_only = entries(&sensors, "", GroupFilter::Cpu, SortOrder::Grouped, true);
+        assert_eq!(cpu_only.len(), 3); // 1 header + 2 cpu rows
+
+        let hottest = entries(
+            &sensors,
+            "",
+            GroupFilter::All,
+            SortOrder::HottestFirst,
+            true,
+        );
+        assert_eq!(hottest.len(), 4);
+        assert!(matches!(&hottest[0], Entry::Reading(s) if s.key == "Tg01"));
+        assert!(matches!(&hottest[1], Entry::Reading(s) if s.key == "Tp01"));
+        assert!(matches!(&hottest[2], Entry::Reading(s) if s.key == "ZZ01"));
+        // Thermal headroom ranks below real temperatures even if numerically larger.
+        assert!(matches!(&hottest[3], Entry::Reading(s) if s.key == "Th01"));
+    }
+
     #[test]
     fn readings_do_not_invalidate_layout_but_semantics_do() {
         let first = Entry::Reading(sensor("Tp01", SensorGroup::Cpu, Some(65.)));

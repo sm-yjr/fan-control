@@ -42,13 +42,21 @@ struct ReadingView: View {
         }.lineLimit(1).minimumScaleFactor(0.8)
     }
 
+    private var temperatureColor: Color {
+        guard recent else { return Color.secondary }
+        guard let temp = reading?.temperature else { return Color.primary }
+        if temp >= 100 { return Color.red }
+        if temp >= 85 { return Color.orange }
+        return Color.primary
+    }
+
     private var temperature: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 1) {
                 Text(reading?.temperature.map { String(format: "%.0f", $0) } ?? "—")
                     .font(.system(size: compact ? 29 : 35, weight: .semibold, design: .rounded)).monospacedDigit()
-                if reading?.temperature != nil { Text("°C").font(.system(size: compact ? 13 : 17, weight: .medium)) }
-            }.foregroundStyle(recent ? Color.primary : Color.secondary)
+                if reading?.temperature != nil { Text("°C").font(.system(size: compact ? 13 : 17, weight: .medium)).foregroundStyle(.secondary) }
+            }.foregroundStyle(temperatureColor)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(Text("CPU temperature"))
                 .accessibilityValue(reading?.temperature.map { Text(String(format: "%.0f °C", $0)) } ?? Text("Unavailable"))

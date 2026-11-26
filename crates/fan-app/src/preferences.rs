@@ -1,8 +1,12 @@
-//! Settings page: grouped rows for general options, the fan control service
-//! and support, each with one plain explanation.
-use crate::form::{self, caption, group, row, section_title, CONTENT};
-use crate::popover::stack;
-use crate::ui::text;
+//! Settings page: fluid System Settings-style grouped cards for general options,
+//! menu bar readout, the fan control service and support.
+use crate::{
+    components::{hstack, SurfaceView},
+    form::{self, fluid_caption, fluid_group, fluid_page, fluid_row, section_title},
+    status_bar::MenuBarDisplayMode,
+    theme::spacing,
+    ui::text,
+};
 use objc2::{rc::Retained, runtime::AnyObject, sel, MainThreadOnly};
 use objc2_app_kit::*;
 use objc2_foundation::MainThreadMarker;
@@ -16,7 +20,7 @@ pub(crate) struct SettingsPage {
     pub configuration_notice: Retained<NSTextField>,
     pub update: Retained<NSButton>,
     /// Groups followed by a caption that is hidden when empty.
-    captioned: [(Retained<crate::popover::TintedView>, Retained<NSTextField>); 2],
+    captioned: [(Retained<SurfaceView>, Retained<NSTextField>); 2],
 }
 
 fn push(
@@ -33,7 +37,6 @@ fn push(
 fn destructive(mtm: MainThreadMarker, title: &str, target: &AnyObject) -> Retained<NSButton> {
     let button = push(mtm, title, target, sel!(uninstall:));
     button.setHasDestructiveAction(true);
-    // Standard push buttons ignore content tint for text; color the title itself.
     let red = NSColor::systemRedColor();
     let attributes = objc2_foundation::NSDictionary::from_slices(
         &[unsafe { NSForegroundColorAttributeName }],
@@ -52,7 +55,7 @@ fn destructive(mtm: MainThreadMarker, title: &str, target: &AnyObject) -> Retain
 
 impl SettingsPage {
     pub fn new(mtm: MainThreadMarker, target: &AnyObject, demo: bool) -> Self {
-        let view = form::page(mtm);
+        let view = fluid_page(mtm);
 
         view.addArrangedSubview(&section_title(mtm, "通用"));
         let login = NSSwitch::new(mtm);
@@ -72,15 +75,43 @@ impl SettingsPage {
             NSControlStateValueOff
         });
         login.setAccessibilityLabel(Some(&text("登录时启动 Fan Control")));
-        let login_row = row(
+        let login_row = fluid_row(
             mtm,
             "登录时启动",
             "开机登录后自动在菜单栏运行，继续使用你的散热设置。",
             &[&login],
         );
+
+        let menu_bar_display = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            crate::ui::rect(0., 0., 170., 26.),
+            false,
+        );
+        for mode in MenuBarDisplayMode::ALL {
+            menu_bar_display.addItemWithTitle(&text(mode.title()));
+        }
+        let current_display = MenuBarDisplayMode::load(demo);
+        if let Some(index) = MenuBarDisplayMode::ALL
+            .iter()
+            .position(|m| *m == current_display)
+        {
+            menu_bar_display.selectItemAtIndex(index as isize);
+        }
+        menu_bar_display.setAccessibilityLabel(Some(&text("菜单栏显示")));
+        unsafe {
+            menu_bar_display.setTarget(Some(target));
+            menu_bar_display.setAction(Some(sel!(menuBarDisplay:)));
+        }
+        let menu_bar_row = fluid_row(
+            mtm,
+            "菜单栏显示",
+            "在状态栏图标旁可选展示实时芯片温度或最高转速。",
+            &[&menu_bar_display],
+        );
+
         let language = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            crate::ui::rect(0., 0., 150., 26.),
+            crate::ui::rect(0., 0., 170., 26.),
             false,
         );
         for title in ["跟随系统", "简体中文", "English"] {
@@ -97,15 +128,21 @@ impl SettingsPage {
             language.setTarget(Some(target));
             language.setAction(Some(sel!(language:)));
         }
-        let language_row = row(mtm, "界面语言", "重新打开应用后生效。", &[&language]);
-        let general = group(mtm, &[&login_row.view, &language_row.view]);
+        let language_row = fluid_row(mtm, "界面语言", "重新打开应用后生效。", &[&language]);
+        let general = fluid_group(
+            mtm,
+            &[&login_row.view, &menu_bar_row.view, &language_row.view],
+        );
         view.addArrangedSubview(&general);
-        let message = caption(
+        general
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
+        let message = fluid_caption(
             mtm,
             &login_status
                 .map(|_| String::new())
                 .unwrap_or_else(|error| error),
-            CONTENT,
         );
         view.addArrangedSubview(&message);
         view.setCustomSpacing_afterView(form::SECTION_GAP, &message);
@@ -114,13 +151,13 @@ impl SettingsPage {
         let install = push(mtm, "启用…", target, sel!(install:));
         install.setEnabled(!demo);
         let retry = push(mtm, "重新检测", target, sel!(retry:));
-        let service = row(mtm, "正在检查…", "", &[&install, &retry]);
+        let service = fluid_row(mtm, "正在检查…", "", &[&install, &retry]);
         service
             .title
             .setFont(Some(&NSFont::systemFontOfSize_weight(form::BODY, unsafe {
-                NSFontWeightMedium
+                NSFontWeightSemibold
             })));
-        let reset_row = row(
+        let reset_row = fluid_row(
             mtm,
             "立即交还系统",
             "所有风扇马上回到 macOS 自动控制，直到你再次选择散热方式。",
@@ -128,41 +165,49 @@ impl SettingsPage {
         );
         let uninstall = destructive(mtm, "移除…", target);
         uninstall.setEnabled(!demo);
-        let uninstall_row = row(
+        let uninstall_row = fluid_row(
             mtm,
             "移除控制服务",
             "需要管理员授权。移除后仍可查看温度，你的设置会保留。",
             &[&uninstall],
         );
-        let service_group = group(mtm, &[&service.view, &reset_row.view, &uninstall_row.view]);
+        let service_group =
+            fluid_group(mtm, &[&service.view, &reset_row.view, &uninstall_row.view]);
         view.addArrangedSubview(&service_group);
-        let configuration_notice = caption(mtm, "", CONTENT);
+        service_group
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
+        let configuration_notice = fluid_caption(mtm, "");
         view.addArrangedSubview(&configuration_notice);
         view.setCustomSpacing_afterView(form::SECTION_GAP, &configuration_notice);
 
         view.addArrangedSubview(&section_title(mtm, "支持"));
         let update = push(mtm, "检查更新…", target, sel!(updates:));
         let version = crate::app_version::current();
-        let update_row = row(
+        let update_row = fluid_row(
             mtm,
             "软件更新",
             &format!("当前版本 {}（{}）", version.version, version.build),
             &[&update],
         );
-        let export_row = row(
+        let export_row = fluid_row(
             mtm,
             "诊断信息",
             "遇到问题时导出诊断文件，附在反馈里帮助排查。",
             &[&push(mtm, "导出…", target, sel!(export:))],
         );
-        let help_buttons = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
+        let help_buttons = hstack(mtm, spacing::SM);
         help_buttons.addArrangedSubview(&push(mtm, "使用帮助", target, sel!(help:)));
         help_buttons.addArrangedSubview(&push(mtm, "关于", target, sel!(about:)));
-        let help_row = row(mtm, "帮助与关于", "", &[&help_buttons]);
-        view.addArrangedSubview(&group(
-            mtm,
-            &[&update_row.view, &export_row.view, &help_row.view],
-        ));
+        let help_row = fluid_row(mtm, "帮助与关于", "", &[&help_buttons]);
+        let support_group = fluid_group(mtm, &[&update_row.view, &export_row.view, &help_row.view]);
+        view.addArrangedSubview(&support_group);
+        support_group
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
+
         Self {
             view,
             login,
@@ -212,7 +257,6 @@ impl SettingsPage {
         self.install.setHidden(demo || ready || installing);
         self.configuration_notice.setStringValue(&text(notice));
         self.configuration_notice.setHidden(notice.is_empty());
-        // A hidden caption takes its section gap with it; keep sections apart.
         for (group, caption) in &self.captioned {
             self.view.setCustomSpacing_afterView(
                 if caption.isHidden() {

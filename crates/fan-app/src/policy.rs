@@ -1,12 +1,21 @@
-//! User-facing thermal goals and two-point, device-bound surface calibration.
+//! User-facing thermal goals: unified immediate-save 21-step cooling preference
+//! plus progressive disclosure for optional two-point surface calibration.
 use crate::{
+    components::{
+        flex_spacer, hstack, label, surface_box, vstack, DisclosureSection, StatusBadge,
+        SurfaceView,
+    },
+    form::{fluid_caption, fluid_group, fluid_page, fluid_row, section_title},
+    popover::{link_button, styled_label},
+    presenter::Tone,
+    theme::{self, spacing, typography, SurfaceStyle},
     ui::{raw_text, rect, text, tokens},
     worker::UiSnapshot,
 };
 use fan_core::{ComfortStatus, SensorGroup, Snapshot, SurfaceCalibration, ThermalPolicy};
 use objc2::{rc::Retained, runtime::AnyObject, sel, MainThreadOnly};
 use objc2_app_kit::*;
-use objc2_foundation::MainThreadMarker;
+use objc2_foundation::{MainThreadMarker, NSSize};
 use std::cell::RefCell;
 
 const RING: f64 = 96.;
@@ -17,17 +26,19 @@ pub struct PolicyEditor {
     demand: Retained<NSTextField>,
     level: Retained<NSTextField>,
     reason: Retained<NSTextField>,
-    status: Retained<NSTextField>,
     usage: Retained<NSTextField>,
+    status_badge: StatusBadge,
     use_smart: Retained<NSButton>,
     comfort: crate::form::Row,
     pub notice: Retained<NSTextField>,
     preference: Retained<NSSlider>,
     preference_value: Retained<NSTextField>,
     preference_reset: Retained<NSButton>,
-    preference_card: Retained<crate::popover::TintedView>,
+    preference_notice: Retained<NSTextField>,
+    preference_card: Retained<SurfaceView>,
     preference_endpoints: Retained<NSStackView>,
     preference_selection: Retained<NSStackView>,
+    calibration_disclosure: DisclosureSection,
     enabled: Retained<NSSwitch>,
     target: Retained<NSTextField>,
     source: Retained<NSPopUpButton>,
@@ -40,6 +51,7 @@ pub struct PolicyEditor {
     machine_id: Option<String>,
     save: Retained<NSButton>,
 }
+
 fn button(
     mtm: MainThreadMarker,
     target: &AnyObject,
@@ -50,6 +62,7 @@ fn button(
         NSButton::buttonWithTitle_target_action(&text(title), Some(target), Some(action), mtm)
     }
 }
+
 fn field(mtm: MainThreadMarker, value: &str, width: f64) -> Retained<NSTextField> {
     let field = NSTextField::textFieldWithString(&raw_text(value), mtm);
     field
@@ -58,6 +71,7 @@ fn field(mtm: MainThreadMarker, value: &str, width: f64) -> Retained<NSTextField
         .setActive(true);
     field
 }
+
 /// Sensor names are enough for people; the SMC key only disambiguates repeats.
 fn sensor_title(sensors: &[&fan_core::Sensor], key: &str) -> String {
     match sensors.iter().find(|s| s.key == key) {
@@ -68,20 +82,19 @@ fn sensor_title(sensors: &[&fan_core::Sensor], key: &str) -> String {
         None => crate::i18n::translate(&format!("{} · 暂不可用", key)),
     }
 }
+
 impl PolicyEditor {
     pub fn new(mtm: MainThreadMarker, delegate: &AnyObject, state: &UiSnapshot) -> Self {
-        use crate::form::{caption, group, row, section_title, spacer, CONTENT};
-        use crate::popover::{stack, styled_label, tinted_box};
-        let view = crate::form::page(mtm);
+        let view = fluid_page(mtm);
+        view.setSpacing(spacing::MD);
 
-        // Now: how much cooling is needed and why, in one sentence.
+        // Hero: live cooling demand ring + plain-language explanation.
         let ring = crate::gauge::Ring::new(mtm, RING, 9.);
-        let demand = styled_label(mtm, "--", 22., true, false, None);
-        demand.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            22.,
-            unsafe { NSFontWeightMedium },
-        )));
-        let center = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 0.);
+        let demand = styled_label(mtm, "—", 22., true, false, None);
+        demand.setFont(Some(&theme::rounded_digits(22., unsafe {
+            NSFontWeightSemibold
+        })));
+        let center = vstack(mtm, 0.);
         center.setAlignment(NSLayoutAttribute::CenterX);
         center.addArrangedSubview(&demand);
         let caption_label = styled_label(
@@ -90,7 +103,7 @@ impl PolicyEditor {
             tokens::CAPTION,
             false,
             true,
-            Some(RING - 30.),
+            Some(RING - 28.),
         );
         caption_label.setAlignment(NSTextAlignment::Center);
         center.addArrangedSubview(&caption_label);
@@ -104,41 +117,69 @@ impl PolicyEditor {
             .centerYAnchor()
             .constraintEqualToAnchor(&ring.centerYAnchor())
             .setActive(true);
-        let words_width = CONTENT - RING - 28. - 20.;
-        let words = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
-        let level = styled_label(mtm, "", 15., true, false, Some(words_width));
-        let reason = styled_label(mtm, "", tokens::BODY, false, false, Some(words_width));
-        let usage = styled_label(mtm, "", tokens::CAPTION, false, true, Some(words_width));
-        let status_row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
-        let status = styled_label(mtm, "", tokens::CAPTION, true, false, None);
+
+        let words = vstack(mtm, 4.);
+        words.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let level = label(
+            mtm,
+            "",
+            typography::SECTION,
+            unsafe { NSFontWeightSemibold },
+            false,
+            true,
+        );
+        let reason = label(
+            mtm,
+            "",
+            tokens::BODY,
+            unsafe { NSFontWeightRegular },
+            false,
+            true,
+        );
+        let usage = label(
+            mtm,
+            "",
+            typography::SMALL,
+            unsafe { NSFontWeightMedium },
+            true,
+            true,
+        );
+        usage.setFont(Some(&theme::rounded_digits(typography::SMALL, unsafe {
+            NSFontWeightMedium
+        })));
+        let status_row = hstack(mtm, spacing::SM);
+        let status_badge = StatusBadge::new(mtm, "当前没有使用智能散热。", Tone::Info);
         let use_smart = button(mtm, delegate, "改用智能散热", sel!(useSmart:));
         use_smart.setControlSize(NSControlSize::Small);
-        status_row.addArrangedSubview(&status);
+        status_row.addArrangedSubview(&status_badge.view);
         status_row.addArrangedSubview(&use_smart);
         words.addArrangedSubview(&level);
         words.addArrangedSubview(&reason);
         words.addArrangedSubview(&usage);
         words.setCustomSpacing_afterView(10., &usage);
         words.addArrangedSubview(&status_row);
-        let hero = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 20.);
+
+        let hero = hstack(mtm, spacing::XL);
         hero.addArrangedSubview(&ring);
         hero.addArrangedSubview(&words);
-        hero.addArrangedSubview(&spacer(mtm));
-        let hero_box = tinted_box(mtm, &hero, objc2_foundation::NSSize::new(14., 14.));
-        hero_box.set_fill(&NSColor::quaternarySystemFillColor());
+        let hero_box = surface_box(mtm, &hero, NSSize::new(16., 14.), SurfaceStyle::Card);
+        view.addArrangedSubview(&hero_box);
         hero_box
             .widthAnchor()
-            .constraintEqualToConstant(CONTENT)
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
             .setActive(true);
-        view.addArrangedSubview(&hero_box);
-        let how = caption(
+
+        let how = fluid_caption(
             mtm,
             "智能散热综合持续负载、机身蓄热和温升趋势平稳调节风扇；短时温度波动不急升急降，持续冷却后交还系统。",
-            CONTENT,
         );
         view.addArrangedSubview(&how);
         view.setCustomSpacing_afterView(crate::form::SECTION_GAP, &how);
 
+        // Unified immediate-save 21-step cooling preference section.
         view.addArrangedSubview(&section_title(mtm, "散热偏好"));
         let preference = unsafe {
             NSSlider::sliderWithValue_minValue_maxValue_target_action(
@@ -152,30 +193,20 @@ impl PolicyEditor {
         };
         preference.setNumberOfTickMarks(21);
         preference.setAllowsTickMarkValuesOnly(true);
-        preference
-            .widthAnchor()
-            .constraintEqualToConstant(crate::form::ROW)
-            .setActive(true);
+        preference.setContinuous(false);
         preference.setAccessibilityLabel(Some(&text("散热偏好")));
         preference.setAccessibilityHelp(Some(&text(
             "21 档散热偏好，左侧更安静，右侧更凉快，默认在中间。保存后仅影响智能散热。",
         )));
-        let preference_value = styled_label(
-            mtm,
-            "当前选择：默认",
-            tokens::BODY,
-            true,
-            false,
-            Some(crate::form::ROW),
-        );
-        let preference_reset = button(mtm, delegate, "恢复默认", sel!(resetCoolingPreference:));
-        let preference_group = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 8.);
+
+        let preference_group = vstack(mtm, spacing::SM);
         preference_group.addArrangedSubview(&preference);
-        let labels = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
-        labels
+        preference
             .widthAnchor()
-            .constraintEqualToConstant(crate::form::ROW)
+            .constraintEqualToAnchor(&preference_group.widthAnchor())
             .setActive(true);
+
+        let labels = hstack(mtm, spacing::SM);
         labels.addArrangedSubview(&styled_label(
             mtm,
             "更安静",
@@ -184,7 +215,7 @@ impl PolicyEditor {
             true,
             None,
         ));
-        labels.addArrangedSubview(&spacer(mtm));
+        labels.addArrangedSubview(&flex_spacer(mtm));
         labels.addArrangedSubview(&styled_label(
             mtm,
             "更凉快",
@@ -194,15 +225,52 @@ impl PolicyEditor {
             None,
         ));
         preference_group.addArrangedSubview(&labels);
-        let selection = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 8.);
-        selection.addArrangedSubview(&preference_value);
-        selection.addArrangedSubview(&preference_reset);
-        let preference_card = group(mtm, &[&preference_group, &selection]);
-        view.addArrangedSubview(&preference_card);
-        view.addArrangedSubview(&caption(mtm, "无需校准。更安静会适度降低日常散热；更凉快每档增加 2 个散热需求百分点，最多增加 20 个百分点，上限 100%。高档位可在空闲时保持主动散热。高温保护始终优先。保存偏好不会切换风扇模式。", CONTENT));
+        labels
+            .widthAnchor()
+            .constraintEqualToAnchor(&preference_group.widthAnchor())
+            .setActive(true);
 
-        // Optional comfort target, only active after a two-point calibration.
-        view.addArrangedSubview(&section_title(mtm, "键盘体感目标（可选）"));
+        let selection = vstack(mtm, spacing::SM);
+        let selection_row = hstack(mtm, spacing::SM);
+        let preference_value = label(
+            mtm,
+            "当前选择：默认",
+            tokens::BODY,
+            unsafe { NSFontWeightMedium },
+            false,
+            false,
+        );
+        let preference_reset = button(mtm, delegate, "恢复默认", sel!(resetCoolingPreference:));
+        preference_reset.setControlSize(NSControlSize::Small);
+        selection_row.addArrangedSubview(&preference_value);
+        selection_row.addArrangedSubview(&flex_spacer(mtm));
+        selection_row.addArrangedSubview(&preference_reset);
+        selection.addArrangedSubview(&selection_row);
+        selection_row
+            .widthAnchor()
+            .constraintEqualToAnchor(&selection.widthAnchor())
+            .setActive(true);
+
+        let preference_notice = fluid_caption(mtm, "");
+        preference_notice.setHidden(true);
+        selection.addArrangedSubview(&preference_notice);
+
+        let preference_card = fluid_group(mtm, &[&preference_group, &selection]);
+        view.addArrangedSubview(&preference_card);
+        preference_card
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
+
+        let pref_caption = fluid_caption(
+            mtm,
+            "无需校准。更安静会适度降低日常散热；更凉快每档增加 2 个散热需求百分点，最多增加 20 个百分点，上限 100%。高档位可在空闲时保持主动散热。高温保护始终优先。保存偏好不会切换风扇模式。",
+        );
+        view.addArrangedSubview(&pref_caption);
+        view.setCustomSpacing_afterView(crate::form::SECTION_GAP, &pref_caption);
+
+        // Collapsible advanced calibration section (progressive disclosure).
+        let calibration_body = vstack(mtm, spacing::SM);
         let enabled = NSSwitch::new(mtm);
         unsafe {
             enabled.setTarget(Some(delegate));
@@ -230,7 +298,7 @@ impl PolicyEditor {
         target.setAccessibilityLabel(Some(&text("键盘体感温度目标，摄氏度")));
         target.setToolTip(Some(&text("30–45°C")));
         let unit = styled_label(mtm, "°C", tokens::BODY, false, false, None);
-        let comfort = row(mtm, "让键盘区域不超过", "", &[&target, &unit, &enabled]);
+        let comfort = fluid_row(mtm, "让键盘区域不超过", "", &[&target, &unit, &enabled]);
 
         let source = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
@@ -272,12 +340,13 @@ impl PolicyEditor {
             source.setTarget(Some(delegate));
             source.setAction(Some(sel!(calibrationSource:)));
         }
-        let source_row = row(
+        let source_row = fluid_row(
             mtm,
             "参考传感器",
             "选一个靠近键盘的机身传感器。",
             &[&source],
         );
+
         let mut measured = Vec::new();
         let mut captured = Vec::new();
         let mut record_buttons = Vec::new();
@@ -289,7 +358,7 @@ impl PolicyEditor {
             let record = button(mtm, delegate, "记录", sel!(recordCalibration:));
             record.setTag(i as isize);
             record.setEnabled(state.snapshot.machine_id.is_some() && !sources.is_empty());
-            let point = row(
+            let point = fluid_row(
                 mtm,
                 &format!("校准点 {}", i + 1),
                 "未记录",
@@ -304,7 +373,8 @@ impl PolicyEditor {
             record_buttons.push(record);
             point_rows.push(point);
         }
-        view.addArrangedSubview(&group(
+
+        let calibration_group = fluid_group(
             mtm,
             &[
                 &comfort.view,
@@ -312,13 +382,18 @@ impl PolicyEditor {
                 &point_rows[0].view,
                 &point_rows[1].view,
             ],
-        ));
-        view.addArrangedSubview(&caption(
+        );
+        calibration_body.addArrangedSubview(&calibration_group);
+        calibration_group
+            .widthAnchor()
+            .constraintEqualToAnchor(&calibration_body.widthAnchor())
+            .setActive(true);
+        calibration_body.addArrangedSubview(&fluid_caption(
             mtm,
             "电脑内部没有键盘表面的温度计，所以需要校准：在两个不同的使用状态下，用外部温度计测量键盘中央并记录，两次内部读数至少相差 3°C。校准只对本机和测量过的温度范围有效；固定速度与温度曲线不受这个目标影响。",
-            CONTENT,
         ));
-        let notice = styled_label(
+
+        let notice = label(
             mtm,
             if state.config.thermal_policy.calibration.is_some() {
                 "已保存的校准会保留；新校准需完成两个记录点后保存。"
@@ -326,45 +401,65 @@ impl PolicyEditor {
                 "尚未校准，当前仅启用性能与热趋势策略。"
             },
             tokens::BODY,
+            unsafe { NSFontWeightRegular },
             false,
-            false,
-            Some(CONTENT),
+            true,
         );
-        view.addArrangedSubview(&notice);
+        calibration_body.addArrangedSubview(&notice);
 
-        let footer = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
-        let clear = crate::popover::link_button(mtm, "清除校准", delegate, sel!(clearCalibration:));
+        let footer = hstack(mtm, spacing::SM);
+        let clear = link_button(mtm, "清除校准", delegate, sel!(clearCalibration:));
         footer.addArrangedSubview(&clear);
-        footer.addArrangedSubview(&spacer(mtm));
+        footer.addArrangedSubview(&flex_spacer(mtm));
         let cancel = button(mtm, delegate, "还原", sel!(cancelPolicy:));
         cancel.setToolTip(Some(&text("放弃未保存的修改")));
         let save = button(mtm, delegate, "保存", sel!(savePolicy:));
         save.setKeyEquivalent(&raw_text("\r"));
         footer.addArrangedSubview(&cancel);
         footer.addArrangedSubview(&save);
+        calibration_body.addArrangedSubview(&footer);
         footer
             .widthAnchor()
-            .constraintEqualToConstant(CONTENT)
+            .constraintEqualToAnchor(&calibration_body.widthAnchor())
             .setActive(true);
-        view.setCustomSpacing_afterView(crate::form::SECTION_GAP, &notice);
-        view.addArrangedSubview(&footer);
+
+        let initially_expanded = state.config.thermal_policy.comfort_target_celsius.is_some()
+            || state.config.thermal_policy.calibration.is_some();
+        let calibration_disclosure = DisclosureSection::new(
+            mtm,
+            "键盘体感目标（可选）",
+            "体感目标未启用",
+            &calibration_body,
+            initially_expanded,
+            delegate,
+            sel!(toggleCalibrationDisclosure:),
+        );
+        view.addArrangedSubview(&calibration_disclosure.view);
+        calibration_disclosure
+            .view
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&view.widthAnchor(), -spacing::XXL * 2.)
+            .setActive(true);
+
         let mut editor = Self {
             view,
             ring,
             demand,
             level,
             reason,
-            status,
             usage,
+            status_badge,
             use_smart,
             comfort,
             notice,
             preference,
             preference_value,
             preference_reset,
+            preference_notice,
             preference_card,
             preference_endpoints: labels,
             preference_selection: selection,
+            calibration_disclosure,
             enabled,
             target,
             source,
@@ -381,6 +476,34 @@ impl PolicyEditor {
         editor.refresh(state);
         editor
     }
+
+    pub fn toggle_calibration_disclosure(&self) {
+        self.calibration_disclosure.flip();
+    }
+
+    pub fn preference_result(&self, result: Result<(), String>) {
+        let failed = result.is_err();
+        let color = if failed {
+            NSColor::systemRedColor()
+        } else {
+            NSColor::secondaryLabelColor()
+        };
+        self.preference_notice.setTextColor(Some(&color));
+        self.preference_notice.setStringValue(&text(&match result {
+            Ok(()) => "散热偏好已保存，等待新采样评估。".into(),
+            Err(e) => format!("保存失败：{e}"),
+        }));
+        self.preference_notice.setHidden(false);
+    }
+
+    pub fn show_preference_saving(&self) {
+        self.preference_notice
+            .setTextColor(Some(&NSColor::secondaryLabelColor()));
+        self.preference_notice
+            .setStringValue(&text("正在保存散热偏好…"));
+        self.preference_notice.setHidden(false);
+    }
+
     pub fn refresh(&mut self, state: &UiSnapshot) {
         let reading = &state.thermal.adaptive;
         let age = state.sample_age_secs + state.published_at.elapsed().as_secs_f64();
@@ -452,7 +575,7 @@ impl PolicyEditor {
             &smart
                 .demand
                 .map(|value| format!("{value:.0}%"))
-                .unwrap_or_else(|| "--".into()),
+                .unwrap_or_else(|| "—".into()),
         ));
         self.level.setStringValue(&raw_text(&format!(
             "{}{}",
@@ -474,17 +597,11 @@ impl PolicyEditor {
             ));
         }
         self.usage.setStringValue(&raw_text(&usage.join(" · ")));
-        self.status.setStringValue(&text(if smart.in_use {
-            "智能散热正在使用"
+        if smart.in_use {
+            self.status_badge.set(Tone::Good, "智能散热正在使用");
         } else {
-            "当前没有使用智能散热。"
-        }));
-        let status_color = if smart.in_use {
-            NSColor::systemGreenColor()
-        } else {
-            NSColor::secondaryLabelColor()
-        };
-        self.status.setTextColor(Some(&status_color));
+            self.status_badge.set(Tone::Info, "当前没有使用智能散热。");
+        }
         self.use_smart.setHidden(smart.in_use);
         self.use_smart.setEnabled(
             state.helper_ready && !state.installing && !state.handback_pending && fresh,
@@ -502,19 +619,28 @@ impl PolicyEditor {
             (true, None) => crate::i18n::translate(comfort_label(reading.comfort_status)),
         };
         crate::form::set_detail(&self.comfort, &comfort);
+        self.calibration_disclosure.summary.setStringValue(&text(
+            if self.enabled.state() == NSControlStateValueOn {
+                comfort_label(reading.comfort_status)
+            } else {
+                "体感目标未启用"
+            },
+        ));
         self.target
             .setEnabled(self.enabled.state() == NSControlStateValueOn);
         self.save.setEnabled(!state.installing);
     }
+
     pub fn tuning(&self) -> fan_core::AdaptiveTuning {
         fan_core::AdaptiveTuning {
             bias: self.preference.doubleValue().round().clamp(-10., 10.) as i8,
         }
     }
+
     pub fn preference_changed(&self) {
         let bias = self.tuning().bias;
         self.preference.setDoubleValue(f64::from(bias));
-        let label = if bias == 0 {
+        let label_text = if bias == 0 {
             crate::i18n::translate("默认")
         } else {
             format!(
@@ -526,14 +652,16 @@ impl PolicyEditor {
         self.preference_value.setStringValue(&raw_text(&format!(
             "{}{}",
             crate::i18n::translate("当前选择："),
-            label,
+            label_text,
         )));
         self.preference_reset.setEnabled(bias != 0);
     }
+
     pub fn reset_preference(&self) {
         self.preference.setDoubleValue(0.);
         self.preference_changed();
     }
+
     pub fn set_saving(&self, saving: bool, installing: bool) {
         self.save.setEnabled(!saving && !installing);
         self.preference.setEnabled(!saving);
@@ -543,18 +671,26 @@ impl PolicyEditor {
         self.target
             .setEnabled(!saving && self.enabled.state() == NSControlStateValueOn);
     }
-    /// Diagnostic-only interaction; the smoke caller uses the simulated worker.
-    /// Keep unrelated calibration drafts; synchronize only an untouched preference.
+
+    /// Synchronizes an accepted preference value without touching calibration drafts.
     pub fn sync_saved_preference(&self, previous: i8, bias: i8) {
         if self.tuning().bias == previous {
             self.preference.setDoubleValue(bias as f64);
             self.preference_changed();
         }
     }
+
+    /// Forces the slider to display the confirmed config value (e.g. after rollback).
+    pub fn force_preference(&self, bias: i8) {
+        self.preference.setDoubleValue(f64::from(bias));
+        self.preference_changed();
+    }
+
     pub fn smoke_preference(&self, bias: i8) {
         self.preference.setDoubleValue(f64::from(bias));
         self.preference_changed();
     }
+
     /// Called only by the isolated --ui-smoke diagnostic.
     pub fn verify_preference_controls(&self) {
         assert_eq!(self.preference.numberOfTickMarks(), 21);
@@ -573,7 +709,14 @@ impl PolicyEditor {
         assert!(!self.preference_reset.isEnabled());
         self.preference.setDoubleValue(original);
         self.preference_changed();
+        // Verify progressive disclosure toggle works cleanly.
+        let before = self.calibration_disclosure.is_expanded();
+        self.toggle_calibration_disclosure();
+        assert_ne!(self.calibration_disclosure.is_expanded(), before);
+        self.toggle_calibration_disclosure();
+        assert_eq!(self.calibration_disclosure.is_expanded(), before);
     }
+
     fn verify_preference_layout(&self) {
         self.view.layoutSubtreeIfNeeded();
         let card: &NSView = &self.preference_card;

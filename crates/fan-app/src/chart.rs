@@ -1,17 +1,21 @@
-//! Native curve editor chart. Points can be dragged with the mouse; exact
-//! keyboard editing remains in the system text fields beside it.
+//! Native curve editor chart with gradient fill, soft grid, stop-zone shading,
+//! live reading marker and smooth point dragging. Exact keyboard editing remains
+//! in the system text fields below.
 use fan_core::{Curve, CurvePoint};
 use objc2::{
-    define_class, msg_send, rc::Retained, runtime::AnyObject, DefinedClass, MainThreadOnly, Message,
+    define_class, msg_send, rc::Retained, runtime::AnyObject, AnyThread, DefinedClass,
+    MainThreadOnly, Message,
 };
-use objc2_app_kit::{NSBezierPath, NSColor, NSEvent, NSView};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2_app_kit::{
+    NSBezierPath, NSColor, NSEvent, NSGradient, NSLineCapStyle, NSLineJoinStyle, NSView,
+};
+use objc2_foundation::{MainThreadMarker, NSCopying, NSPoint, NSRect, NSSize};
 use std::cell::{Cell, RefCell};
 
-const INSET: f64 = 16.;
-const HANDLE: f64 = 5.;
+const INSET: f64 = 18.;
+const HANDLE: f64 = 5.5;
 /// A press this close to a point (in points) grabs it.
-const GRAB: f64 = 14.;
+const GRAB: f64 = 15.;
 pub const SPEED_MIN: f64 = -20.;
 pub const SPEED_MAX: f64 = 100.;
 
@@ -112,6 +116,12 @@ define_class!(
                 .as_ref()
                 .and_then(|curve| nearest(curve, location, self.bounds().size));
             self.ivars().dragging.set(index);
+            self.setNeedsDisplay(true);
+            if index.is_some() {
+                if let Some(target) = self.ivars().target.borrow().as_ref() {
+                    let _: () = unsafe { msg_send![&**target, curveDragged: self] };
+                }
+            }
         }
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
@@ -134,58 +144,146 @@ define_class!(
         }
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, _event: &NSEvent) {
-            self.ivars().dragging.set(None);
+            if self.ivars().dragging.replace(None).is_some() {
+                self.setNeedsDisplay(true);
+                if let Some(target) = self.ivars().target.borrow().as_ref() {
+                    let _: () = unsafe { msg_send![&**target, curveDragged: self] };
+                }
+            }
         }
         #[unsafe(method(drawRect:))]
         fn draw(&self, _dirty: NSRect) {
             let size = self.bounds().size;
             let w = (size.width - INSET * 2.).max(1.);
             let h = (size.height - INSET * 2.).max(1.);
-            NSColor::separatorColor().setStroke();
+
+            // Subtle horizontal and vertical reference grid.
+            NSColor::separatorColor().colorWithAlphaComponent(0.55).setStroke();
             let grid = NSBezierPath::bezierPath();
             grid.setLineWidth(0.5);
             for i in 0..=4 {
                 let y = INSET + h * i as f64 / 4.;
                 grid.moveToPoint(NSPoint::new(INSET, y));
                 grid.lineToPoint(NSPoint::new(INSET + w, y));
+                let x = INSET + w * i as f64 / 4.;
+                grid.moveToPoint(NSPoint::new(x, INSET));
+                grid.lineToPoint(NSPoint::new(x, INSET + h));
             }
             grid.stroke();
+
             let borrowed = self.ivars().curve.borrow();
             let Some(curve) = borrowed.as_ref() else {
                 return;
             };
             let maximum = input_maximum(curve);
+
             // Stop zone: below 0% the fan is handed back to the system.
             let zero = to_view(&CurvePoint { temperature: 0., speed_percent: 0. }, size, maximum).y;
             NSColor::quaternarySystemFillColor().setFill();
-            NSBezierPath::fillRect(NSRect::new(NSPoint::new(INSET, INSET), NSSize::new(w, zero - INSET)));
+            NSBezierPath::fillRect(NSRect::new(
+                NSPoint::new(INSET, INSET),
+                NSSize::new(w, (zero - INSET).max(0.)),
+            ));
+            NSColor::separatorColor().setStroke();
+            let zero_line = NSBezierPath::bezierPath();
+            zero_line.setLineWidth(0.8);
+            zero_line.moveToPoint(NSPoint::new(INSET, zero));
+            zero_line.lineToPoint(NSPoint::new(INSET + w, zero));
+            zero_line.stroke();
+
+            let mut points = curve.points.clone();
+            points.sort_by(|a, b| a.temperature.total_cmp(&b.temperature));
+
+            // Soft gradient area under the curve down to the 0% baseline.
+            if points.len() >= 2 {
+                let line = NSBezierPath::bezierPath();
+                line.setLineWidth(2.2);
+                line.setLineCapStyle(NSLineCapStyle::Round);
+                line.setLineJoinStyle(NSLineJoinStyle::Round);
+                let first = to_view(&points[0], size, maximum);
+                line.moveToPoint(first);
+                for point in &points[1..] {
+                    line.lineToPoint(to_view(point, size, maximum));
+                }
+                let fill = line.copy();
+                let last = to_view(points.last().unwrap(), size, maximum);
+                fill.lineToPoint(NSPoint::new(last.x, zero));
+                fill.lineToPoint(NSPoint::new(first.x, zero));
+                fill.closePath();
+                let top = NSColor::controlAccentColor().colorWithAlphaComponent(0.20);
+                let bottom = NSColor::controlAccentColor().colorWithAlphaComponent(0.02);
+                if let Some(gradient) = NSGradient::initWithStartingColor_endingColor(
+                    NSGradient::alloc(),
+                    &top,
+                    &bottom,
+                ) {
+                    gradient.drawInBezierPath_angle(&fill, -90.0);
+                } else {
+                    NSColor::controlAccentColor()
+                        .colorWithAlphaComponent(0.10)
+                        .setFill();
+                    fill.fill();
+                }
+                NSColor::controlAccentColor().setStroke();
+                line.stroke();
+            }
+
+            // Live current reading dashed marker + interpolated intersection dot.
             if let Some(current) = self.ivars().current.get() {
-                let x = INSET + w * (current / maximum).clamp(0., 1.);
+                let clamped = current.clamp(0., maximum);
+                let x = INSET + w * (clamped / maximum);
                 let marker = NSBezierPath::bezierPath();
-                marker.setLineWidth(1.);
+                marker.setLineWidth(1.2);
+                let dash = [4.0_f64, 3.0];
+                unsafe { marker.setLineDash_count_phase(dash.as_ptr(), 2, 0.) };
                 marker.moveToPoint(NSPoint::new(x, INSET));
                 marker.lineToPoint(NSPoint::new(x, INSET + h));
                 NSColor::systemOrangeColor().setStroke();
                 marker.stroke();
-            }
-            let mut points = curve.points.clone();
-            points.sort_by(|a, b| a.temperature.total_cmp(&b.temperature));
-            let line = NSBezierPath::bezierPath();
-            line.setLineWidth(2.);
-            for (i, point) in points.iter().enumerate() {
-                let p = to_view(point, size, maximum);
-                if i == 0 { line.moveToPoint(p); } else { line.lineToPoint(p); }
-            }
-            NSColor::controlAccentColor().setStroke();
-            line.stroke();
-            NSColor::controlAccentColor().setFill();
-            for point in &points {
-                let p = to_view(point, size, maximum);
+
+                let interp = curve.interpolate(clamped);
+                let dot = to_view(
+                    &CurvePoint {
+                        temperature: clamped,
+                        speed_percent: interp,
+                    },
+                    size,
+                    maximum,
+                );
+                NSColor::systemOrangeColor().setFill();
                 NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
-                    NSPoint::new(p.x - HANDLE, p.y - HANDLE),
-                    NSSize::new(HANDLE * 2., HANDLE * 2.),
+                    NSPoint::new(dot.x - 3.5, dot.y - 3.5),
+                    NSSize::new(7., 7.),
                 ))
                 .fill();
+            }
+
+            // Control point handles with active halo during drag.
+            let dragging = self.ivars().dragging.get();
+            for (index, point) in points.iter().enumerate() {
+                let p = to_view(point, size, maximum);
+                let active = dragging == Some(index);
+                if active {
+                    NSColor::controlAccentColor()
+                        .colorWithAlphaComponent(0.26)
+                        .setFill();
+                    let halo = HANDLE * 2.1;
+                    NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                        NSPoint::new(p.x - halo, p.y - halo),
+                        NSSize::new(halo * 2., halo * 2.),
+                    ))
+                    .fill();
+                }
+                let r = if active { HANDLE + 1.0 } else { HANDLE };
+                NSColor::controlBackgroundColor().setFill();
+                let outer = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                    NSPoint::new(p.x - r, p.y - r),
+                    NSSize::new(r * 2., r * 2.),
+                ));
+                outer.fill();
+                NSColor::controlAccentColor().setStroke();
+                outer.setLineWidth(2.2);
+                outer.stroke();
             }
         }
     }
@@ -198,6 +296,7 @@ impl CurvePreview {
             ..Ivars::default()
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        this.setTranslatesAutoresizingMaskIntoConstraints(false);
         this.setToolTip(Some(&objc2_foundation::NSString::from_str(
             &crate::i18n::translate(
                 "拖动圆点调整曲线；横轴为控制输入，纵轴为风扇速度。灰色区域表示交还系统。",
@@ -214,6 +313,14 @@ impl CurvePreview {
     }
     pub fn is_dragging(&self) -> bool {
         self.ivars().dragging.get().is_some()
+    }
+    pub fn active_point(&self) -> Option<CurvePoint> {
+        let index = self.ivars().dragging.get()?;
+        let borrowed = self.ivars().curve.borrow();
+        let curve = borrowed.as_ref()?;
+        let mut points = curve.points.clone();
+        points.sort_by(|a, b| a.temperature.total_cmp(&b.temperature));
+        points.get(index).cloned()
     }
     pub fn set_current(&self, value: Option<f64>) {
         if self.ivars().current.get() != value {

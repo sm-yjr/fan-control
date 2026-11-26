@@ -1,42 +1,29 @@
 //! Menu bar panel: the everyday surface for checking temperature and picking
-//! one cooling plan for every fan. Built from system controls in stack views
-//! so text length, language and Dynamic Type never clip.
-use crate::presenter::{Action, Plan, Presentation, Tone};
-use crate::ui::{raw_text, text};
-use objc2::{
-    define_class, msg_send, rc::Retained, runtime::AnyObject, sel, DefinedClass, MainThreadOnly,
-    Message,
+//! one cooling plan for every fan. Built from system controls in layered cards
+//! with conditional disclosure by active cooling mode.
+use crate::{
+    components::{surface_box, vstack, StatusBadge, SurfaceView},
+    presenter::{Action, Plan, Presentation, Tone},
+    theme::{self, layout, spacing, typography, SurfaceStyle},
+    ui::{raw_text, text},
 };
+use objc2::{rc::Retained, runtime::AnyObject, sel, MainThreadOnly};
 use objc2_app_kit::*;
-use objc2_foundation::{MainThreadMarker, NSArray, NSEdgeInsets, NSRect, NSSize};
-use std::cell::{Cell, RefCell};
+use objc2_foundation::{MainThreadMarker, NSArray, NSEdgeInsets, NSSize};
+use std::cell::Cell;
 
 pub(crate) mod tokens {
-    pub const PANEL_WIDTH: f64 = 400.;
-    pub const INSET: f64 = 16.;
-    pub const DASHBOARD_HERO: f64 = 50.;
-    pub const DASHBOARD_HERO_COMPACT: f64 = 44.;
-    pub const RPM_DIGITS: f64 = 30.;
-    pub const RPM_DIGITS_COMPACT: f64 = 27.;
-    pub const DASHBOARD_CAPTION: f64 = 11.;
-    pub const PLOT_LABEL: f64 = 10.;
-    pub const GAUGE_TRACK: f64 = 10.;
-    pub const HEADLINE: f64 = 14.;
-    pub const BODY: f64 = 13.;
-    pub const CAPTION: f64 = 12.;
-    pub const GAP: f64 = 8.;
-    pub const SECTION_GAP: f64 = 14.;
-    pub const RADIUS: f64 = 8.;
-    pub const TINT_ALPHA: f64 = 0.14;
+    pub const INSET: f64 = crate::theme::spacing::LG;
+    pub const DASHBOARD_CAPTION: f64 = crate::theme::typography::SMALL;
+    pub const PLOT_LABEL: f64 = crate::theme::typography::MICRO;
+    pub const GAUGE_TRACK: f64 = crate::theme::layout::GAUGE_TRACK;
+    pub const BODY: f64 = crate::theme::typography::BODY;
+    pub const CAPTION: f64 = crate::theme::typography::CAPTION;
+    pub const GAP: f64 = crate::theme::spacing::SM;
 }
 
 pub(crate) fn tone_color(tone: Tone) -> Retained<NSColor> {
-    match tone {
-        Tone::Good => NSColor::systemGreenColor(),
-        Tone::Info => NSColor::controlAccentColor(),
-        Tone::Warning => NSColor::systemOrangeColor(),
-        Tone::Danger => NSColor::systemRedColor(),
-    }
+    theme::tone_color(tone)
 }
 
 pub(crate) fn stack(
@@ -55,7 +42,6 @@ pub(crate) fn stack(
         },
     );
     stack.setDetachesHiddenViews(true);
-    // Stacks keep their content height instead of stretching to the window.
     stack.setHuggingPriority_forOrientation(
         NSLayoutPriorityDefaultHigh,
         NSLayoutConstraintOrientation::Vertical,
@@ -84,7 +70,6 @@ pub(crate) fn styled_label(
     if secondary {
         field.setTextColor(Some(&NSColor::secondaryLabelColor()));
     }
-    // Stacks hug their content at high priority; text must never lose to that.
     field.setContentCompressionResistancePriority_forOrientation(
         NSLayoutPriorityRequired,
         NSLayoutConstraintOrientation::Vertical,
@@ -103,8 +88,6 @@ pub(crate) fn styled_label(
 /// Native diagnostic: both the label frame and its required text height must
 /// fit after the final panel size is applied, including wrapping translations.
 pub(crate) fn verify_label_geometry(label: &NSTextField, container: &NSView) {
-    // NSTextField's native drawing frame includes alignment padding outside
-    // the stack; inspect its alignment rect for containment, full bounds for text.
     let frame =
         label.convertRect_toView(label.alignmentRectForFrame(label.bounds()), Some(container));
     let bounds = container.bounds();
@@ -126,72 +109,6 @@ pub(crate) fn verify_label_geometry(label: &NSTextField, container: &NSView) {
         "label text clipped: {} frame={frame:?} required={required:?}",
         label.stringValue()
     );
-}
-
-pub(crate) struct TintIvars {
-    fill: RefCell<Option<Retained<NSColor>>>,
-}
-
-define_class!(
-    /// Rounded tinted background that sizes itself from its content's
-    /// constraints, unlike NSBox whose content view ignores Auto Layout.
-    #[unsafe(super=NSView)]
-    #[thread_kind=MainThreadOnly]
-    #[ivars=TintIvars]
-    pub(crate) struct TintedView;
-    impl TintedView {
-        #[unsafe(method(drawRect:))]
-        fn draw(&self, _dirty: NSRect) {
-            if let Some(fill) = self.ivars().fill.borrow().as_ref() {
-                fill.setFill();
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                    self.bounds(),
-                    tokens::RADIUS,
-                    tokens::RADIUS,
-                )
-                .fill();
-            }
-        }
-    }
-);
-
-impl TintedView {
-    pub fn set_fill(&self, color: &NSColor) {
-        self.ivars().fill.replace(Some(color.retain()));
-        self.setNeedsDisplay(true);
-    }
-}
-
-pub(crate) fn tinted_box(
-    mtm: MainThreadMarker,
-    content: &NSView,
-    margin: NSSize,
-) -> Retained<TintedView> {
-    let this = TintedView::alloc(mtm).set_ivars(TintIvars {
-        fill: RefCell::new(None),
-    });
-    let tile: Retained<TintedView> = unsafe { msg_send![super(this), init] };
-    content.setTranslatesAutoresizingMaskIntoConstraints(false);
-    tile.addSubview(content);
-    for constraint in [
-        content
-            .leadingAnchor()
-            .constraintEqualToAnchor_constant(&tile.leadingAnchor(), margin.width),
-        tile.trailingAnchor()
-            .constraintEqualToAnchor_constant(&content.trailingAnchor(), margin.width),
-        content
-            .topAnchor()
-            .constraintEqualToAnchor_constant(&tile.topAnchor(), margin.height),
-        tile.bottomAnchor()
-            .constraintEqualToAnchor_constant(&content.bottomAnchor(), margin.height),
-    ] {
-        constraint.setActive(true);
-    }
-    tile.setContentHuggingPriority_forOrientation(
-        NSLayoutPriorityDefaultHigh,
-        NSLayoutConstraintOrientation::Vertical,
-    );
-    tile
 }
 
 pub(crate) fn link_button(
@@ -216,11 +133,14 @@ fn symbol_button(
     target: &AnyObject,
     action: objc2::runtime::Sel,
 ) -> Retained<NSButton> {
-    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &raw_text(symbol),
-        Some(&text(label)),
-    )
-    .expect("system symbol");
+    let image = theme::symbol_image(symbol, Some(label), 14.0)
+        .or_else(|| {
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &raw_text(symbol),
+                Some(&text(label)),
+            )
+        })
+        .expect("system symbol");
     let button =
         unsafe { NSButton::buttonWithImage_target_action(&image, Some(target), Some(action), mtm) };
     button.setBordered(false);
@@ -243,9 +163,9 @@ pub(crate) struct DashboardUpdate<'a> {
 pub(crate) struct MenuPanel {
     pub popover: Retained<NSPopover>,
     root: Retained<NSStackView>,
-    status_tile: Retained<TintedView>,
-    status: Retained<NSTextField>,
+    badge: StatusBadge,
     dashboard: crate::dashboard::Dashboard,
+    preference_section: Retained<NSStackView>,
     pub preference: Retained<NSSlider>,
     preference_value: Retained<NSTextField>,
     preference_reset: Retained<NSButton>,
@@ -257,7 +177,7 @@ pub(crate) struct MenuPanel {
     pub slider: Retained<NSSlider>,
     percent: Retained<NSTextField>,
     curve: Retained<NSButton>,
-    card: Retained<TintedView>,
+    card: Retained<SurfaceView>,
     card_title: Retained<NSTextField>,
     card_body: Retained<NSTextField>,
     card_action: Retained<NSButton>,
@@ -267,17 +187,19 @@ pub(crate) struct MenuPanel {
 
 impl MenuPanel {
     pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> Self {
-        Self::with_width(mtm, target, tokens::PANEL_WIDTH)
+        Self::with_width(mtm, target, layout::PANEL_WIDTH)
     }
 
     pub fn with_width(mtm: MainThreadMarker, target: &AnyObject, panel_width: f64) -> Self {
         use tokens::*;
         let content_width = panel_width - INSET * 2.;
-        let root = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, GAP);
+        let card_pad = 12.;
+        let control_inner = content_width - card_pad * 2.;
+        let root = vstack(mtm, spacing::MD);
         root.setEdgeInsets(NSEdgeInsets {
             top: INSET,
             left: INSET,
-            bottom: INSET - 4.,
+            bottom: INSET - 2.,
             right: INSET,
         });
         root.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -285,38 +207,47 @@ impl MenuPanel {
             .constraintEqualToConstant(panel_width)
             .setActive(true);
 
-        // Header: product name and one-word health.
-        let header = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, GAP);
+        // Header: product identity and semantic icon+text status pill.
+        let header = stack(
+            mtm,
+            NSUserInterfaceLayoutOrientation::Horizontal,
+            spacing::SM,
+        );
         header
             .widthAnchor()
             .constraintEqualToConstant(content_width)
             .setActive(true);
-        if let Some(icon) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &raw_text("fanblades"),
-            None,
-        ) {
-            header.addArrangedSubview(&NSImageView::imageViewWithImage(&icon, mtm));
+        if let Some(icon) = theme::symbol_image("fanblades.fill", None, 16.0)
+            .or_else(|| theme::symbol_image("fanblades", None, 16.0))
+        {
+            let img = NSImageView::imageViewWithImage(&icon, mtm);
+            img.setContentTintColor(Some(&NSColor::controlAccentColor()));
+            header.addArrangedSubview(&img);
         }
-        header.addArrangedSubview(&styled_label(mtm, "Fan Control", 18., true, false, None));
-        let spacer = NSView::new(mtm);
-        spacer.setContentHuggingPriority_forOrientation(
-            1.,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        header.addArrangedSubview(&spacer);
-        let status = styled_label(mtm, "正在检测…", CAPTION, true, false, None);
-        let status_tile = tinted_box(mtm, &status, NSSize::new(8., 2.));
-        header.addArrangedSubview(&status_tile);
+        let brand = styled_label(mtm, "Fan Control", 16., true, false, None);
+        brand.setFont(Some(&NSFont::systemFontOfSize_weight(16., unsafe {
+            NSFontWeightSemibold
+        })));
+        header.addArrangedSubview(&brand);
+        header.addArrangedSubview(&crate::dashboard::spacer(mtm));
+        let badge = StatusBadge::new(mtm, "正在检测…", Tone::Info);
+        header.addArrangedSubview(&badge.view);
         root.addArrangedSubview(&header);
-        root.setCustomSpacing_afterView(SECTION_GAP, &header);
 
         let dashboard = crate::dashboard::Dashboard::new(mtm, content_width);
         root.addArrangedSubview(&dashboard.view);
 
-        // Problem card, only shown when something needs attention.
-        let card_stack = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
-        let card_title = styled_label(mtm, "", BODY, true, false, Some(content_width - 24.));
-        let card_body = styled_label(mtm, "", CAPTION, false, false, Some(content_width - 24.));
+        // Problem banner, shown only when attention or action is required.
+        let card_stack = vstack(mtm, 4.);
+        let card_title = styled_label(mtm, "", BODY, true, false, Some(control_inner));
+        let card_body = styled_label(
+            mtm,
+            "",
+            typography::SMALL,
+            false,
+            false,
+            Some(control_inner),
+        );
         let card_action = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &text("启用风扇控制"),
@@ -329,15 +260,27 @@ impl MenuPanel {
         card_stack.addArrangedSubview(&card_title);
         card_stack.addArrangedSubview(&card_body);
         card_stack.addArrangedSubview(&card_action);
-        let card = tinted_box(mtm, &card_stack, NSSize::new(12., 10.));
+        let card = surface_box(
+            mtm,
+            &card_stack,
+            NSSize::new(card_pad, 10.),
+            SurfaceStyle::Banner(Tone::Info),
+        );
         card.widthAnchor()
             .constraintEqualToConstant(content_width)
             .setActive(true);
         root.addArrangedSubview(&card);
-        root.setCustomSpacing_afterView(SECTION_GAP, &card);
 
-        // One plan for every fan.
-        root.addArrangedSubview(&styled_label(mtm, "散热方式", CAPTION, false, true, None));
+        // Layered cooling control card with mode-based conditional disclosure.
+        let control_stack = vstack(mtm, spacing::SM);
+        control_stack.addArrangedSubview(&styled_label(
+            mtm,
+            "散热方式",
+            typography::CAPTION,
+            true,
+            true,
+            None,
+        ));
         let labels: Vec<_> = ["系统默认", "智能散热", "自定义"]
             .iter()
             .map(|name| text(name))
@@ -361,13 +304,12 @@ impl MenuPanel {
             );
             plan.setImage_forSegment(image.as_deref(), index as isize);
         }
-        // Longer translations drop the symbols rather than overflow the panel.
-        if plan.intrinsicContentSize().width > content_width {
+        if plan.intrinsicContentSize().width > control_inner {
             for index in 0..3 {
                 plan.setImage_forSegment(None, index);
             }
         }
-        if plan.intrinsicContentSize().width > content_width {
+        if plan.intrinsicContentSize().width > control_inner {
             plan.setControlSize(NSControlSize::Small);
             plan.setFont(Some(&NSFont::systemFontOfSize(
                 NSFont::smallSystemFontSize(),
@@ -375,30 +317,24 @@ impl MenuPanel {
         }
         plan.setSegmentDistribution(NSSegmentDistribution::FillEqually);
         plan.widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
         plan.setAccessibilityLabel(Some(&text("散热方式")));
-        root.addArrangedSubview(&plan);
-        let description = styled_label(mtm, "", CAPTION, false, true, Some(content_width));
+        control_stack.addArrangedSubview(&plan);
 
-        let custom = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 4.);
+        // Custom fixed-speed controls (only visible in Plan::Custom).
+        let custom = vstack(mtm, 4.);
         let speed_row = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, GAP);
         speed_row.addArrangedSubview(&styled_label(mtm, "风扇速度", BODY, false, false, None));
-        let speed_spacer = NSView::new(mtm);
-        speed_spacer.setContentHuggingPriority_forOrientation(
-            1.,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        speed_row.addArrangedSubview(&speed_spacer);
+        speed_row.addArrangedSubview(&crate::dashboard::spacer(mtm));
         let percent = styled_label(mtm, "40%", BODY, true, false, None);
-        percent.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            BODY,
-            unsafe { NSFontWeightMedium },
-        )));
+        percent.setFont(Some(&theme::rounded_digits(BODY, unsafe {
+            NSFontWeightSemibold
+        })));
         speed_row.addArrangedSubview(&percent);
         speed_row
             .widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
         let slider = unsafe {
             NSSlider::sliderWithValue_minValue_maxValue_target_action(
@@ -414,50 +350,79 @@ impl MenuPanel {
         slider.setAllowsTickMarkValuesOnly(false);
         slider
             .widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
         slider.setAccessibilityLabel(Some(&text("风扇速度")));
         slider.setAccessibilityHelp(Some(&text(
             "0% 为硬件最低转速，100% 为最高转速。松开后生效。",
         )));
         let range = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, GAP);
-        range.addArrangedSubview(&styled_label(mtm, "最安静", CAPTION, false, true, None));
-        let range_spacer = NSView::new(mtm);
-        range_spacer.setContentHuggingPriority_forOrientation(
-            1.,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        range.addArrangedSubview(&range_spacer);
-        range.addArrangedSubview(&styled_label(mtm, "最凉爽", CAPTION, false, true, None));
+        range.addArrangedSubview(&styled_label(
+            mtm,
+            "最安静",
+            typography::SMALL,
+            false,
+            true,
+            None,
+        ));
+        range.addArrangedSubview(&crate::dashboard::spacer(mtm));
+        range.addArrangedSubview(&styled_label(
+            mtm,
+            "最凉爽",
+            typography::SMALL,
+            false,
+            true,
+            None,
+        ));
         range
             .widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
         custom.addArrangedSubview(&speed_row);
         custom.addArrangedSubview(&slider);
         custom.addArrangedSubview(&range);
-        root.addArrangedSubview(&custom);
-        let curve = link_button(mtm, "按温度自动调节（温度曲线）…", target, sel!(useCurve:));
-        root.addArrangedSubview(&curve);
+        control_stack.addArrangedSubview(&custom);
 
-        let selection = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, GAP);
+        let curve = link_button(mtm, "按温度自动调节（温度曲线）…", target, sel!(useCurve:));
+        curve.setFont(Some(&NSFont::systemFontOfSize(typography::CAPTION)));
+        control_stack.addArrangedSubview(&curve);
+
+        // Smart cooling 21-step preference section (disclosed only in Plan::Smart).
+        let preference_section = vstack(mtm, 6.);
+        let selection = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 6.);
         selection
             .widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
-        selection.addArrangedSubview(&styled_label(mtm, "散热偏好", HEADLINE, true, false, None));
+        selection.addArrangedSubview(&styled_label(
+            mtm,
+            "散热偏好",
+            typography::CAPTION,
+            true,
+            false,
+            None,
+        ));
         selection.addArrangedSubview(&crate::dashboard::spacer(mtm));
-        let preference_value = styled_label(mtm, "当前选择：默认", 11., false, true, None);
-        let badge = tinted_box(mtm, &preference_value, NSSize::new(6., 3.));
-        badge.set_fill(&NSColor::quaternarySystemFillColor());
-        selection.addArrangedSubview(&badge);
-        root.addArrangedSubview(&selection);
-        root.setCustomSpacing_afterView(8., &selection);
+        let pref_size = if control_inner < 300. {
+            10.0
+        } else {
+            typography::SMALL
+        };
+        let preference_value = styled_label(mtm, "当前选择：默认", pref_size, false, true, None);
+        let pref_pill = surface_box(
+            mtm,
+            &preference_value,
+            NSSize::new(6., 2.),
+            SurfaceStyle::NeutralPill,
+        );
+        selection.addArrangedSubview(&pref_pill);
+        preference_section.addArrangedSubview(&selection);
+
         let preference = unsafe {
             NSSlider::sliderWithValue_minValue_maxValue_target_action(
                 0.,
                 -10.,
-                tokens::PLOT_LABEL,
+                10.,
                 Some(target),
                 Some(sel!(panelCoolingPreference:)),
                 mtm,
@@ -468,23 +433,24 @@ impl MenuPanel {
         preference.setContinuous(false);
         preference
             .widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
         preference.setAccessibilityLabel(Some(&text("散热偏好")));
         preference.setAccessibilityHelp(Some(&text("21 档散热偏好，默认在中间。更凉快每档增加 2 个散热需求百分点，最多增加 20 个百分点，上限 100%。高档位可在空闲时保持主动散热；恢复默认后可随冷却交还系统。")));
         preference.setToolTip(preference.accessibilityHelp().as_deref());
-        root.addArrangedSubview(&preference);
+        preference_section.addArrangedSubview(&preference);
+
         let endpoints = NSView::new(mtm);
         endpoints
             .widthAnchor()
-            .constraintEqualToConstant(content_width)
+            .constraintEqualToConstant(control_inner)
             .setActive(true);
         endpoints
             .heightAnchor()
-            .constraintEqualToConstant(18.)
+            .constraintEqualToConstant(16.)
             .setActive(true);
-        for (label, position) in [("更安静", -1), ("默认", 0), ("更凉快", 1)] {
-            let field = styled_label(mtm, label, 11., false, true, None);
+        for (label_text, position) in [("更安静", -1), ("默认", 0), ("更凉快", 1)] {
+            let field = styled_label(mtm, label_text, typography::SMALL, false, true, None);
             field.setTranslatesAutoresizingMaskIntoConstraints(false);
             endpoints.addSubview(&field);
             field
@@ -506,40 +472,39 @@ impl MenuPanel {
                     .setActive(true),
             }
         }
-        root.addArrangedSubview(&endpoints);
+        preference_section.addArrangedSubview(&endpoints);
+
         let preference_reset =
             link_button(mtm, "恢复默认", target, sel!(resetPanelCoolingPreference:));
-        preference_reset.setFont(Some(&NSFont::systemFontOfSize(11.)));
-        root.addArrangedSubview(&preference_reset);
-        root.addArrangedSubview(&description);
-        let preference_notice = styled_label(
-            mtm,
-            "",
-            tokens::DASHBOARD_CAPTION,
-            false,
-            true,
-            Some(content_width),
-        );
-        preference_notice.setHidden(true);
-        root.addArrangedSubview(&preference_notice);
+        preference_reset.setFont(Some(&NSFont::systemFontOfSize(typography::SMALL)));
+        preference_section.addArrangedSubview(&preference_reset);
+        control_stack.addArrangedSubview(&preference_section);
 
-        // Footer.
-        let separator = NSBox::new(mtm);
-        separator.setBoxType(NSBoxType::Separator);
-        separator
+        let description =
+            styled_label(mtm, "", typography::SMALL, false, true, Some(control_inner));
+        control_stack.addArrangedSubview(&description);
+
+        let preference_notice =
+            styled_label(mtm, "", DASHBOARD_CAPTION, false, true, Some(control_inner));
+        preference_notice.setHidden(true);
+        control_stack.addArrangedSubview(&preference_notice);
+
+        let control_card = surface_box(
+            mtm,
+            &control_stack,
+            NSSize::new(card_pad, 12.),
+            SurfaceStyle::Card,
+        );
+        control_card
             .widthAnchor()
             .constraintEqualToConstant(content_width)
             .setActive(true);
-        root.addArrangedSubview(&separator);
-        root.setCustomSpacing_afterView(4., &separator);
+        root.addArrangedSubview(&control_card);
+
+        // Footer bar.
         let footer = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 12.);
         footer.addArrangedSubview(&link_button(mtm, "打开 Fan Control", target, sel!(show:)));
-        let footer_spacer = NSView::new(mtm);
-        footer_spacer.setContentHuggingPriority_forOrientation(
-            1.,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        footer.addArrangedSubview(&footer_spacer);
+        footer.addArrangedSubview(&crate::dashboard::spacer(mtm));
         footer.addArrangedSubview(&symbol_button(
             mtm,
             "gearshape",
@@ -566,18 +531,7 @@ impl MenuPanel {
         material.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
         material.setState(NSVisualEffectState::FollowsWindowActiveState);
         material.addSubview(&root);
-        for c in [
-            root.leadingAnchor()
-                .constraintEqualToAnchor(&material.leadingAnchor()),
-            root.trailingAnchor()
-                .constraintEqualToAnchor(&material.trailingAnchor()),
-            root.topAnchor()
-                .constraintEqualToAnchor(&material.topAnchor()),
-            root.bottomAnchor()
-                .constraintEqualToAnchor(&material.bottomAnchor()),
-        ] {
-            c.setActive(true);
-        }
+        crate::components::pin_edges(&root, &material);
         controller.setView(&material);
         let popover = NSPopover::new(mtm);
         popover.setBehavior(NSPopoverBehavior::Transient);
@@ -585,9 +539,9 @@ impl MenuPanel {
         Self {
             popover,
             root,
-            status_tile,
-            status,
+            badge,
             dashboard,
+            preference_section,
             preference,
             preference_value,
             preference_reset,
@@ -638,19 +592,18 @@ impl MenuPanel {
     ) {
         let healthy = view.notice.tone == Tone::Good;
         let tint = tone_color(view.notice.tone);
-        self.status.setStringValue(&text(match view.notice.tone {
-            Tone::Good => "运行正常",
-            Tone::Info => "提示",
-            Tone::Warning => "需要注意",
-            Tone::Danger => "温度偏高",
-        }));
-        self.status.setTextColor(Some(&tint));
-        self.status_tile
-            .set_fill(&tint.colorWithAlphaComponent(tokens::TINT_ALPHA));
+        self.badge.set(
+            view.notice.tone,
+            match view.notice.tone {
+                Tone::Good => "运行正常",
+                Tone::Info => "提示",
+                Tone::Warning => "需要注意",
+                Tone::Danger => "温度偏高",
+            },
+        );
         self.card.setHidden(healthy);
         if !healthy {
-            self.card
-                .set_fill(&tint.colorWithAlphaComponent(tokens::TINT_ALPHA));
+            self.card.set_style(SurfaceStyle::Banner(view.notice.tone));
             self.card_title.setStringValue(&text(view.notice.title));
             self.card_title.setTextColor(Some(&tint));
             self.card_body.setStringValue(&text(view.notice.body));
@@ -681,14 +634,18 @@ impl MenuPanel {
         }
         self.plan.setEnabled(view.controls_enabled);
         let custom = view.plan == Plan::Custom;
+        let smart = view.plan == Plan::Smart;
         self.custom.setHidden(!custom);
         self.curve.setHidden(!custom);
+        self.preference_section.setHidden(!smart);
+
         let percent = pending.unwrap_or(view.custom_percent);
         if pending.is_none() {
             self.slider.setDoubleValue(percent);
         }
         self.slider.setEnabled(view.controls_enabled);
         self.set_percent_label(percent);
+
         let DashboardUpdate {
             cards,
             history,
@@ -714,7 +671,7 @@ impl MenuPanel {
             .setStringValue(&raw_text(&format!("{}{}", tr("当前选择："), value)));
         self.preference.setEnabled(!saving);
         self.preference_reset.setEnabled(!saving && shown != 0);
-        let description = if view.plan == Plan::Smart && shown > 0 {
+        let description = if smart && shown > 0 {
             "按散热偏好加强散热；较高偏好可能在空闲时保持主动散热。恢复默认后可随冷却交还系统。"
         } else if custom && view.curve_active {
             "正在按温度曲线运行。拖动滑块会改为固定速度。"
@@ -776,7 +733,7 @@ impl MenuPanel {
     pub fn verify_layout(&self, cards: &[crate::presenter::FanCard]) {
         self.root.layoutSubtreeIfNeeded();
         self.dashboard.verify_layout(cards);
-        for label in [&self.status, &self.description, &self.preference_value] {
+        for label in [&self.badge.label, &self.description] {
             verify_label_geometry(label, &self.root);
         }
         if !self.card.isHidden() {
@@ -790,23 +747,18 @@ impl MenuPanel {
         if !self.custom.isHidden() {
             verify_label_geometry(&self.percent, &self.root);
         }
-        let slider = self
-            .preference
-            .convertRect_toView(self.preference.bounds(), Some(&self.root));
-        let label = self
-            .preference_value
-            .convertRect_toView(self.preference_value.bounds(), Some(&self.root));
-        assert!(slider.size.width > 0. && slider.size.height > 0.);
-        assert!(label.size.height > 0.);
-        assert!(
-            slider.origin.y + slider.size.height <= label.origin.y + 1.
-                || label.origin.y + label.size.height <= slider.origin.y + 1.
-        );
-        assert_eq!(self.preference.numberOfTickMarks(), 21);
-        assert!(self.preference.allowsTickMarkValuesOnly());
+        if !self.preference_section.isHidden() {
+            verify_label_geometry(&self.preference_value, &self.root);
+            let slider = self
+                .preference
+                .convertRect_toView(self.preference.bounds(), Some(&self.root));
+            let label = self
+                .preference_value
+                .convertRect_toView(self.preference_value.bounds(), Some(&self.root));
+            assert!(slider.size.width > 0. && slider.size.height > 0.);
+            assert!(label.size.height > 0.);
+        }
     }
-
-    /// Forces the next refresh to re-select the plan after a user change is rejected.
     pub fn forget_plan(&mut self) {
         self.shown_plan = None;
     }

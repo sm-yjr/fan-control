@@ -657,6 +657,23 @@ const CATALOG: &[Text] = texts![
     ("估计当前", "Estimated now"),
     ("内部读数", "Internal"),
     ("实测", "measured"),
+    ("仅图标", "Icon only"),
+    ("图标与芯片温度", "Icon & chip temperature"),
+    ("图标与最高转速", "Icon & fastest fan"),
+    ("图标、温度与转速", "Icon, temperature & fan"),
+    ("主导航", "Main navigation"),
+    ("风扇与散热方式", "Fans & cooling mode"),
+    ("单独配置各风扇…", "Configure individual fans…"),
+    ("全部", "All"),
+    ("图形", "Graphics"),
+    ("机身", "Chassis"),
+    ("按分组", "Grouped"),
+    ("按最热", "Hottest"),
+    ("按分组筛选传感器", "Filter sensors by group"),
+    ("传感器排序方式", "Sort sensors"),
+    ("颜色表示温度高低：绿色较凉，黄色温热，橙色偏热，红色过热。名称按芯片型号核对，未确认项保留原始标识，虚拟温度与热余量单独标明。", "Colors show relative warmth: green is cool, yellow is warm, orange is hot, red is very hot. Names are checked by chip model; unconfirmed sensors keep their raw key, and virtual temperatures or headroom are labeled separately."),
+    ("菜单栏显示", "Menu bar display"),
+    ("在状态栏图标旁可选展示实时芯片温度或最高转速。", "Optionally show live chip temperature or fastest fan speed next to the menu bar icon."),
 ];
 
 #[derive(Clone, Copy)]
@@ -1261,6 +1278,14 @@ mod tests {
             ("form.rs", include_str!("form.rs")),
             ("gauge.rs", include_str!("gauge.rs")),
             ("preferences.rs", include_str!("preferences.rs")),
+            ("theme.rs", include_str!("theme.rs")),
+            ("components.rs", include_str!("components.rs")),
+            ("status_bar.rs", include_str!("status_bar.rs")),
+            ("sidebar.rs", include_str!("sidebar.rs")),
+            ("shell.rs", include_str!("shell.rs")),
+            ("curve_editor.rs", include_str!("curve_editor.rs")),
+            ("dashboard.rs", include_str!("dashboard.rs")),
+            ("sensor_list.rs", include_str!("sensor_list.rs")),
         ] {
             check_source_coverage(
                 file,

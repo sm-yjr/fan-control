@@ -1,103 +1,73 @@
 //! Grouped page layout in the style of System Settings: a section title over a
-//! rounded group of rows, each row a title, an optional explanation and one
-//! control on the trailing edge.
-use crate::popover::{stack, styled_label, tinted_box, TintedView};
+//! layered rounded group of fluid rows for the resizable detail pane.
+use crate::{
+    components::{flex_spacer, hairline, surface_box, vstack, SurfaceView},
+    popover::styled_label,
+    theme::{spacing, typography, SurfaceStyle},
+};
 use objc2::rc::Retained;
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSEdgeInsets, NSSize};
 
-pub(crate) const WIDTH: f64 = crate::ui::tokens::WIDTH;
-pub(crate) const INSET: f64 = 24.;
-pub(crate) const CONTENT: f64 = WIDTH - INSET * 2.;
 const ROW_INSET: f64 = 14.;
-/// Width available to a row's own content inside a group.
-pub(crate) const ROW: f64 = CONTENT - ROW_INSET * 2.;
-pub(crate) const BODY: f64 = 13.;
-pub(crate) const CAPTION: f64 = 11.;
+pub(crate) const BODY: f64 = typography::BODY;
+pub(crate) const CAPTION: f64 = typography::SMALL;
 pub(crate) const SECTION_GAP: f64 = 18.;
 
-pub(crate) fn page(mtm: MainThreadMarker) -> Retained<NSStackView> {
-    let page = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 8.);
+/// Resizable page container for the modern split-view detail pane.
+pub(crate) fn fluid_page(mtm: MainThreadMarker) -> Retained<NSStackView> {
+    let page = vstack(mtm, spacing::SM);
+    page.setTranslatesAutoresizingMaskIntoConstraints(false);
     page.setEdgeInsets(NSEdgeInsets {
-        top: 20.,
-        left: INSET,
-        bottom: 22.,
-        right: INSET,
+        top: spacing::XL,
+        left: spacing::XXL,
+        bottom: spacing::XXL,
+        right: spacing::XXL,
     });
-    page.widthAnchor()
-        .constraintEqualToConstant(WIDTH)
-        .setActive(true);
     page
-}
-
-/// A view controller sized to its page so the tab window fits the content.
-pub(crate) fn controller(mtm: MainThreadMarker, view: &NSView) -> Retained<NSViewController> {
-    let controller = NSViewController::new(mtm);
-    controller.setView(view);
-    fit(&controller, view);
-    controller
-}
-
-/// Sizes the page to its natural height. The tab controller resizes the
-/// window from frame-based child views, so the page keeps autoresizing.
-pub(crate) fn fit(controller: &NSViewController, view: &NSView) {
-    view.setTranslatesAutoresizingMaskIntoConstraints(true);
-    view.layoutSubtreeIfNeeded();
-    let size = view.fittingSize();
-    view.setFrameSize(size);
-    controller.setPreferredContentSize(size);
-}
-
-/// Refits a page whose content grew or shrank, such as a fan switching to a
-/// fixed speed and showing its slider.
-pub(crate) fn refit(controller: &NSViewController, view: &NSView) {
-    let size = view.fittingSize();
-    if (size.height - view.frame().size.height).abs() > 0.5 {
-        fit(controller, view);
-    }
-}
-
-pub(crate) fn spacer(mtm: MainThreadMarker) -> Retained<NSView> {
-    let spacer = NSView::new(mtm);
-    spacer.setContentHuggingPriority_forOrientation(1., NSLayoutConstraintOrientation::Horizontal);
-    spacer
 }
 
 pub(crate) fn section_title(mtm: MainThreadMarker, title: &str) -> Retained<NSTextField> {
     let label = styled_label(mtm, title, BODY, true, false, None);
-    label.setFont(Some(&NSFont::boldSystemFontOfSize(BODY)));
+    label.setFont(Some(&NSFont::systemFontOfSize_weight(BODY, unsafe {
+        NSFontWeightSemibold
+    })));
     label
 }
 
-pub(crate) fn caption(mtm: MainThreadMarker, value: &str, width: f64) -> Retained<NSTextField> {
-    styled_label(mtm, value, CAPTION, false, true, Some(width))
+pub(crate) fn fluid_caption(mtm: MainThreadMarker, value: &str) -> Retained<NSTextField> {
+    crate::components::label(
+        mtm,
+        value,
+        CAPTION,
+        unsafe { NSFontWeightRegular },
+        true,
+        true,
+    )
 }
 
-pub(crate) fn separator(mtm: MainThreadMarker, width: f64) -> Retained<NSBox> {
-    let line = NSBox::new(mtm);
-    line.setBoxType(NSBoxType::Separator);
-    line.widthAnchor()
-        .constraintEqualToConstant(width)
-        .setActive(true);
-    line
-}
-
-/// A rounded group; rows are separated by hairlines.
-pub(crate) fn group(mtm: MainThreadMarker, rows: &[&NSView]) -> Retained<TintedView> {
-    let content = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 10.);
+/// Fluid-width card group whose rows and hairlines expand with the detail pane.
+pub(crate) fn fluid_group(mtm: MainThreadMarker, rows: &[&NSView]) -> Retained<SurfaceView> {
+    let content = vstack(mtm, 10.);
     for (index, row) in rows.iter().enumerate() {
         if index > 0 {
-            content.addArrangedSubview(&separator(mtm, ROW));
+            let line = hairline(mtm);
+            content.addArrangedSubview(&line);
+            line.widthAnchor()
+                .constraintEqualToAnchor(&content.widthAnchor())
+                .setActive(true);
         }
         content.addArrangedSubview(row);
+        row.widthAnchor()
+            .constraintEqualToAnchor(&content.widthAnchor())
+            .setActive(true);
     }
-    let group = tinted_box(mtm, &content, NSSize::new(ROW_INSET, 11.));
-    group.set_fill(&NSColor::quaternarySystemFillColor());
-    group
-        .widthAnchor()
-        .constraintEqualToConstant(CONTENT)
-        .setActive(true);
-    group
+    surface_box(
+        mtm,
+        &content,
+        NSSize::new(ROW_INSET, 12.),
+        SurfaceStyle::Card,
+    )
 }
 
 pub(crate) struct Row {
@@ -106,33 +76,51 @@ pub(crate) struct Row {
     pub detail: Retained<NSTextField>,
 }
 
-/// Title and explanation on the leading edge, `accessory` on the trailing edge.
-pub(crate) fn row(
+/// Resizable row where the text stack yields width to trailing accessories naturally.
+pub(crate) fn fluid_row(
     mtm: MainThreadMarker,
     title: &str,
     detail: &str,
     accessories: &[&NSView],
 ) -> Row {
-    let accessory_width: f64 = accessories
-        .iter()
-        .map(|view| view.fittingSize().width + 8.)
-        .sum();
-    let words_width = (ROW - accessory_width - 12.).max(180.);
-    let words = stack(mtm, NSUserInterfaceLayoutOrientation::Vertical, 2.);
-    let title = styled_label(mtm, title, BODY, false, false, Some(words_width));
-    let detail = styled_label(mtm, detail, CAPTION, false, true, Some(words_width));
+    let words = vstack(mtm, 2.);
+    let title = crate::components::label(
+        mtm,
+        title,
+        BODY,
+        unsafe { NSFontWeightRegular },
+        false,
+        true,
+    );
+    let detail = crate::components::label(
+        mtm,
+        detail,
+        CAPTION,
+        unsafe { NSFontWeightRegular },
+        true,
+        true,
+    );
     detail.setHidden(detail.stringValue().length() == 0);
     words.addArrangedSubview(&title);
     words.addArrangedSubview(&detail);
-    let view = stack(mtm, NSUserInterfaceLayoutOrientation::Horizontal, 8.);
+    words.setContentCompressionResistancePriority_forOrientation(
+        NSLayoutPriorityDefaultLow,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
+    let view = crate::components::hstack(mtm, spacing::MD);
     view.addArrangedSubview(&words);
-    view.addArrangedSubview(&spacer(mtm));
+    view.addArrangedSubview(&flex_spacer(mtm));
     for accessory in accessories {
+        accessory.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityRequired,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        accessory.setContentHuggingPriority_forOrientation(
+            NSLayoutPriorityRequired,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
         view.addArrangedSubview(accessory);
     }
-    view.widthAnchor()
-        .constraintEqualToConstant(ROW)
-        .setActive(true);
     Row {
         view,
         title,
